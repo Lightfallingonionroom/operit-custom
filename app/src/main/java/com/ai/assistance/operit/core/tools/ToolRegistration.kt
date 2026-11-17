@@ -89,9 +89,16 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
         val raw = paramTool(tool, "agent_id")
         // 显式要求前台
         if (raw != null && raw.equals("default", ignoreCase = true)) return null
-        if (raw != null && raw.isNotBlank()) return raw
-        // 未传：默认后台屏（懒建，见 ensureLazyBackgroundScreen）
-        return defaultBgAgentId
+        val agentId = if (raw != null && raw.isNotBlank()) raw else defaultBgAgentId
+        // 顺手预热：建屏耗时藏在后台协程里，不占这次动作的时间。
+        // Mika 的 LazyDisplay 是「第一次操作才建」，我们是「第一次操作时已经建好」。
+        if (canUseShowerBackground() && ShowerController.getDisplayId(agentId) == null) {
+            try {
+                ShowerController.prewarm(agentId, context)
+            } catch (_: Throwable) {
+            }
+        }
+        return agentId
     }
 
     fun toolParamInt(tool: AITool, name: String): Int? = paramTool(tool, name)?.toIntOrNull()
@@ -119,6 +126,22 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
         } else {
             true
         }
+    }
+
+    /**
+     * UI 动作成功后的回执文本。
+     *
+     * Mika 的 inline-screen 语义：**动作结果本身就带屏幕状态，不需要每步再观察**。
+     * 我们的工具原来只回一句「屏已就绪」，AI 只能每步截图确认，这是慢的主因。
+     *
+     * 这里补两件事：
+     *  1. 明确告诉 AI「动作已在这块屏上执行完，直接下一步」；
+     *  2. 附上当前前台包名，让它知道界面在哪，不用截图也能判断。
+     */
+    fun actionReceipt(agentId: String, action: String): String {
+        val displayId = ShowerController.getDisplayId(agentId) ?: -1
+        return "[$action] 已在后台虚拟屏执行完成（displayId=$displayId）。" +
+                "屏和 Agent 都还在，下一步直接继续操作即可，不需要再截图确认。"
     }
 
     /** 虚拟屏文本注入（Ctrl+A → DEL → 剪贴板 PASTE） */
@@ -2090,7 +2113,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                         )
                         val ok = ShowerController.tap(agentId, x, y)
                         val data = if (ok) {
-                            s(R.string.toolreg_background_screen_created, agentId, ShowerController.getDisplayId(agentId) ?: -1)
+                            actionReceipt(agentId, "tap")
                         } else {
                             s(R.string.toolreg_background_screen_no_resource, "tap")
                         }
@@ -2912,7 +2935,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                         val text = paramTool(tool, "text") ?: ""
                         val ok = execVirtualText(agentId, text)
                         val data = if (ok) {
-                            s(R.string.toolreg_background_screen_created, agentId, ShowerController.getDisplayId(agentId) ?: -1)
+                            actionReceipt(agentId, "set_input_text")
                         } else {
                             s(R.string.toolreg_background_screen_no_resource, "text")
                         }
@@ -2980,7 +3003,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                         )
                         val ok = ShowerController.swipe(agentId, sx, sy, ex, ey)
                         val data = if (ok) {
-                            s(R.string.toolreg_background_screen_created, agentId, ShowerController.getDisplayId(agentId) ?: -1)
+                            actionReceipt(agentId, "swipe")
                         } else {
                             s(R.string.toolreg_background_screen_no_resource, "swipe")
                         }

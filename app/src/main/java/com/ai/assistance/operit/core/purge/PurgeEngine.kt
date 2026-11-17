@@ -41,6 +41,23 @@ object PurgeEngine {
     private val _enabled = MutableStateFlow(false)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
+    // ---------- 运行态统计：证明补丁真的跑过 ----------
+    /** 最近一次 system prompt 改写是否真的产生了变更 */
+    private val _lastApplyAt = MutableStateFlow(0L)
+    val lastApplyAt: StateFlow<Long> = _lastApplyAt.asStateFlow()
+
+    /** 最近一次改写后的提示词长度增量（>0 说明注入真的写进去了） */
+    private val _lastDelta = MutableStateFlow(0)
+    val lastDelta: StateFlow<Int> = _lastDelta.asStateFlow()
+
+    /** 累计改写次数 */
+    private val _applyCount = MutableStateFlow(0)
+    val applyCount: StateFlow<Int> = _applyCount.asStateFlow()
+
+    /** 最近一次改写命中的补丁编号（去重、有序） */
+    private val _lastHitIds = MutableStateFlow<List<Int>>(emptyList())
+    val lastHitIds: StateFlow<List<Int>> = _lastHitIds.asStateFlow()
+
     /** 补丁启用状态：id -> 是否启用 */
     private val patchState = ConcurrentHashMap<Int, Boolean>()
 
@@ -62,8 +79,8 @@ object PurgeEngine {
             _enabled.value = prefs.getBoolean(KEY_ENABLED, false)
             _promptText.value = prefs.getString(KEY_PROMPT, "").orEmpty()
             PurgePatchCatalog.ALL.forEach { def ->
-                // N_A 的条目不进启用表，保持默认关闭
-                if (def.kind != PortKind.N_A) {
+                // 只有 LIVE 的项进启用表；其余状态不落地也不显示
+                if (def.status == PatchStatus.LIVE) {
                     patchState[def.id] = prefs.getBoolean(patchKey(def.id), false)
                 }
             }
@@ -109,7 +126,7 @@ object PurgeEngine {
 
     fun setPatchEnabled(id: Int, value: Boolean) {
         val def = PurgePatchCatalog.byId[id] ?: return
-        if (def.kind == PortKind.N_A) return
+        if (def.status != PatchStatus.LIVE) return
         patchState[id] = value
         prefs.edit().putBoolean(patchKey(id), value).apply()
     }
@@ -118,17 +135,18 @@ object PurgeEngine {
     fun applicablePatchCount(): Int = PurgePatchCatalog.applicable.size
 
     /**
-     * 一键全开：把所有可落地的补丁（非 N_A）置为启用，并打开总开关。
+     * 一键全开：把所有 LIVE 补丁置为启用，并打开总开关。
      * 批量写入一次 commit，避免逐项 apply 抖动。
+     *
+     * 只开 LIVE 项——隐藏的补丁开了也不会有任何效果，
+     * 反而让「已启用 x/y」这个计数骗人。
      */
     fun enableAll() {
         ensureInitialized()
         val editor = prefs.edit()
-        PurgePatchCatalog.ALL.forEach { def ->
-            if (def.kind != PortKind.N_A) {
-                patchState[def.id] = true
-                editor.putBoolean(patchKey(def.id), true)
-            }
+        PurgePatchCatalog.visible.forEach { def ->
+            patchState[def.id] = true
+            editor.putBoolean(patchKey(def.id), true)
         }
         _enabled.value = true
         editor.putBoolean(KEY_ENABLED, true)
@@ -275,6 +293,16 @@ object PurgeEngine {
                 }
             }
             if (!mutated) return null
+            // 记录真实生效证据：面板据此显示「已应用」而不是只显示开关状态
+            _applyCount.value = _applyCount.value + 1
+            _lastApplyAt.value = System.currentTimeMillis()
+            _lastHitIds.value = patchState.filter { it.value }.keys.sorted()
+            val delta = (systemPrompt?.length ?: 0) - (context.systemPrompt?.length ?: 0)
+            if (delta != 0) _lastDelta.value = delta
+            AppLogger.i(
+                    TAG,
+                    "finalize applied #${_applyCount.value} delta=$delta hits=${_lastHitIds.value}"
+            )
             return PromptHookMutation(
                     systemPrompt = systemPrompt,
                     chatHistory = history,

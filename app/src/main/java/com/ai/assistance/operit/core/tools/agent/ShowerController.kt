@@ -2,6 +2,9 @@ package com.ai.assistance.operit.core.tools.agent
 
 import android.content.Context
 import com.ai.assistance.showerclient.ShowerController as ClientShowerController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -230,17 +233,58 @@ object ShowerController {
     @Volatile
     var appContext: android.content.Context? = null
 
+    /** 每个 agentId 一把建屏锁：并发动作同时到达时只建一次屏，其余等待复用。 */
+    private val buildLocks = ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+    /** 已在预热中的任务，避免重复发起 */
+    @Volatile private var prewarming = false
+
+    /**
+     * 建屏耗时主要来自 `ShowerServerManager.ensureServerStarted`（首次启动 shower-server）
+     * 和虚拟屏创建。Mika 的做法是把这一步藏在第一次真实操作里，但那样第一次动作会很慢。
+     *
+     * 这里改成：任务开始时（或上一次动作结束后）预先在后台把屏建好，
+     * 真正的动作调用命中已建好的屏，立刻返回。
+     *
+     * 预热不阻塞调用方，失败了也不影响后续动作（真正的 ensure 会再试）。
+     */
+    fun prewarm(agentId: String, context: android.content.Context) {
+        if (prewarming) return
+        if (getDisplayId(agentId) != null) return
+        prewarming = true
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                ensureBackgroundDisplay(agentId, context)
+            } catch (_: Throwable) {
+            } finally {
+                prewarming = false
+            }
+        }
+    }
+
     /** 建立指定 agentId 的 Shower 虚拟屏（由 AI 工具显式调用） */
     suspend fun ensureBackgroundDisplay(
         agentId: String,
         context: android.content.Context,
         bitrateKbps: Int = 3000
-    ): Int? {
+): Int? {
         appContext = context.applicationContext
-        if (getDisplayId(agentId) != null) return getDisplayId(agentId)
-        val metrics = context.resources.displayMetrics
-        val ok = ShowerServerManager.ensureServerStarted(context) &&
-                ensureDisplay(agentId, context, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi, bitrateKbps)
-        return if (ok) getDisplayId(agentId) else null
+        getDisplayId(agentId)?.let { return it }
+        val lock = buildLocks.getOrPut(agentId) { kotlinx.coroutines.sync.Mutex() }
+        return lock.withLock {
+            // 双检：等锁期间可能已被别的协程建好
+            getDisplayId(agentId)?.let { return@withLock it }
+            val metrics = context.resources.displayMetrics
+            val ok = ShowerServerManager.ensureServerStarted(context) &&
+                    ensureDisplay(
+                            agentId,
+                            context,
+                            metrics.widthPixels,
+                            metrics.heightPixels,
+                            metrics.densityDpi,
+                            bitrateKbps
+                    )
+            if (ok) getDisplayId(agentId) else null
+        }
     }
 }

@@ -43,7 +43,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.ai.assistance.operit.R
-import com.ai.assistance.operit.core.purge.PortKind
+import com.ai.assistance.operit.core.purge.PatchStatus
 import com.ai.assistance.operit.core.purge.PurgeEngine
 import com.ai.assistance.operit.core.purge.PurgeLayer
 import com.ai.assistance.operit.core.purge.PurgePatchCatalog
@@ -194,7 +194,10 @@ private fun PatchTab(refreshTick: Int, onRefresh: () -> Unit) {
             }
         }
         LAYER_ORDER.forEach { (layer, label) ->
-            val defs = PurgePatchCatalog.ALL.filter { it.layer == layer }
+            // 只显示真正能生效的（PatchStatus.LIVE）。
+            // 之前用 ALL，把 N_A / 宿主绑定 / 无实现的幽灵项都摆出来，
+            // 导致「很多选项应用不了」——勾了没有任何反应。
+            val defs = PurgePatchCatalog.visible.filter { it.layer == layer }
             if (defs.isEmpty()) return@forEach
             val isOpen = expanded[layer.name] == true
             item(key = "header_${layer.name}") {
@@ -240,8 +243,7 @@ private fun PatchTab(refreshTick: Int, onRefresh: () -> Unit) {
                                     fontFamily = FontFamily.Monospace
                             )
                             Text(
-                                    def.meaning + " · " + def.target +
-                                            if (def.kind == PortKind.N_A) " · 不适用" else "",
+                                    def.meaning + " · " + def.target,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -251,11 +253,26 @@ private fun PatchTab(refreshTick: Int, onRefresh: () -> Unit) {
                                 onCheckedChange = {
                                     PurgeEngine.setPatchEnabled(def.id, it)
                                     onRefresh()
-                                },
-                                enabled = def.kind != PortKind.N_A
+                                }
                         )
                     }
                 }
+            }
+        }
+        item(key = "hidden_note") {
+            val hidden = PurgePatchCatalog.hiddenSummary()
+            Column(modifier = Modifier.padding(top = 16.dp)) {
+                Text(
+                        "已隐藏 ${hidden.values.sum()} 项无法在 Operit 生效的补丁",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                        "宿主框架未对接 ${hidden[PatchStatus.HOST_BOUND] ?: 0} · " +
+                                "dsh 专有 ${hidden[PatchStatus.N_A] ?: 0}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
         item { Spacer(modifier = Modifier.height(24.dp)) }
@@ -394,6 +411,11 @@ private fun ZfxTab() {
 @Composable
 private fun StatusTab() {
     val enabled by PurgeEngine.enabled.collectAsState()
+    val applyCount by PurgeEngine.applyCount.collectAsState()
+    val lastApplyAt by PurgeEngine.lastApplyAt.collectAsState()
+    val delta by PurgeEngine.lastDelta.collectAsState()
+    val hits by PurgeEngine.lastHitIds.collectAsState()
+    val hidden = remember { PurgePatchCatalog.hiddenSummary() }
     LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
@@ -404,11 +426,79 @@ private fun StatusTab() {
                     Text("运行状态", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("总开关：${if (enabled) "开" else "关"}")
-                    Text("已启用补丁：${PurgeEngine.enabledPatchCount()}")
-                    Text("可启用补丁：${PurgeEngine.applicablePatchCount()}")
+                    Text("可生效补丁：${PurgeEngine.applicablePatchCount()} 项")
+                    Text("已启用：${PurgeEngine.enabledPatchCount()} 项")
                     Text("版本：${PurgeEngine.PURGE_VERSION}")
                 }
             }
         }
+        item { Spacer(modifier = Modifier.height(12.dp)) }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("实际生效证据", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (applyCount == 0) {
+                        Text(
+                                "还没有发过请求。总开关打开后，发一条消息，" +
+                                        "这里会显示提示词被改写的真实记录。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text("累计改写：$applyCount 次")
+                        Text("最近一次：${formatTime(lastApplyAt)}")
+                        Text(
+                                if (delta != 0) "提示词长度变化：${if (delta > 0) "+" else ""}$delta 字符"
+                                else "提示词长度变化：0（注入段已在历史里，未重复写入）"
+                        )
+                        if (hits.isNotEmpty()) {
+                            Text("命中补丁：${hits.joinToString(", ") { "#$it" }}")
+                        }
+                    }
+                }
+            }
+        }
+        item { Spacer(modifier = Modifier.height(12.dp)) }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("已隐藏项说明", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                            "宿主框架未对接：${hidden[PatchStatus.HOST_BOUND] ?: 0} 项",
+                            style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                            "需要改 Operit 的权限审批、rewind、会话组装才能落地，本轮未做。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                            "dsh 专有对象：${hidden[PatchStatus.N_A] ?: 0} 项",
+                            style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                            "上游针对 web preset / 桌面壳 / 第三方 hook，Operit 里没有这些东西。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
+}
+
+/** 毫秒时间戳 → HH:mm:ss */
+private fun formatTime(ms: Long): String {
+    if (ms <= 0L) return "—"
+    val cal = java.util.Calendar.getInstance()
+    cal.timeInMillis = ms
+    return String.format(
+            "%02d:%02d:%02d",
+            cal.get(java.util.Calendar.HOUR_OF_DAY),
+            cal.get(java.util.Calendar.MINUTE),
+            cal.get(java.util.Calendar.SECOND)
+    )
 }

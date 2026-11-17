@@ -102,6 +102,32 @@ object SystemToolPrompts {
         )
     )
 
+    /**
+     * 手机操作的执行准则。
+     *
+     * 对照 Mika 的 `prompts/capabilities/phone.md` 与 `inline-screen.md`：
+     * Mika 第一句就告诉模型「你的动作跑在专用虚拟屏上」，并明确「动作结果自带
+     * 屏幕差分，不需要每步再观察」。缺这两句，模型会反复截图、反复确认，
+     * 表现为「慢、不顺手、像在摸索」。
+     */
+    val phoneOperationGuidelinesCn = SystemToolPromptCategory(
+        categoryName = "手机操作准则",
+        tools = listOf(
+            ToolPrompt(
+                name = "phone_operation",
+                description = "你的所有手机操作都跑在一块**专属虚拟屏**上。" +
+                    "用户同时在主屏上用自己的手机，你们互不干扰，你的点击不会切走或遮挡他的界面。\n" +
+                    "1. 起始时虚拟屏是空的，这是正常的——它是你的屏，不是用户当前的屏。要哪个 App 自己用 start_app 打开。\n" +
+                    "2. 直接调 tap / swipe / set_input_text / capture_screenshot 即可，**不要先调 start_background_screen**，" +
+                    "首次操作会自动建屏。\n" +
+                    "3. 每次 UI 动作的返回里已经带上执行结果和 displayId，**说明动作已完成**。" +
+                    "不要每步都截图确认；只在真的需要看清界面内容时才调 capture_screenshot。\n" +
+                    "4. 一块屏可以贯穿整个任务，agent_id 不用反复传——默认就是同一块。",
+                parametersStructured = emptyList()
+            )
+        )
+    )
+
     val basicToolsCn = SystemToolPromptCategory(
         categoryName = "可用工具",
         tools = listOf(
@@ -654,7 +680,8 @@ object SystemToolPrompts {
             adjustedFileSystemTools,
             httpToolsCn,
             memoryToolsCn,
-            backgroundScreenToolsCn
+            backgroundScreenToolsCn,
+            phoneOperationGuidelinesCn
         )
     }
 
