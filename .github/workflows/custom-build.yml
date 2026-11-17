@@ -1,0 +1,231 @@
+name: Custom Build (Operit + Purge + ZFX + Mika)
+
+# 定制构建流水线：与上游 android-build.yml 的差异
+# 1. terminal / showerclient / quickjs 等模块在本仓库是直接提交源码（不是 submodule），
+#    因此不做 git submodule update。
+# 2. 上游 ci/script/prepare_android_dependencies.py 会 rmtree(app/libs) 再解包 libs.zip，
+#    会冲掉本定制的 ffmpeg-kit-local.aar；本流程在依赖准备之后从 ci-assets/ 回填。
+# 3. gradle.properties 里的 org.gradle.java.home / android.aapt2FromMavenOverride 是
+#    aarch64 本地特化，x86 runner 上必须去掉，改为 setup-java 提供的 JDK 21。
+
+on:
+  workflow_dispatch:
+    inputs:
+      gradle_task:
+        description: Gradle task to run
+        required: true
+        default: assembleDebug
+        type: choice
+        options:
+          - assembleDebug
+          - assembleRelease
+          - :app:compileDebugKotlin
+          - :app:bundleRelease
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: custom-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '21'
+  NODE_VERSION: '22'
+  ANDROID_NDK_VERSION: '25.1.8937393'
+  ANDROID_CMAKE_VERSION: '3.22.1'
+  ANDROID_API_LEVEL: '26'
+  RUST_VERSION: '1.88.0'
+  MANUAL_DEPS_DIR: manual-deps
+
+jobs:
+  build:
+    name: Build custom APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "platforms;android-36" \
+            "build-tools;34.0.0" \
+            "build-tools;35.0.0" \
+            "ndk;$ANDROID_NDK_VERSION" \
+            "cmake;$ANDROID_CMAKE_VERSION"
+
+      - name: Restore Android CMake source cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            **/.cxx/operit_deps/*-src
+          key: android-cmake-sources-${{ runner.os }}-${{ runner.arch }}-arm64-v8a-ndk-${{ env.ANDROID_NDK_VERSION }}-cmake-${{ env.ANDROID_CMAKE_VERSION }}-${{ hashFiles('cmake/**', '**/CMakeLists.txt', '**/*.cmake', '**/build.gradle.kts', 'gradle.properties') }}
+
+      - name: Restore Android dependency cache
+        id: cache-manual-deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MANUAL_DEPS_DIR }}
+          key: android-full-deps-${{ runner.os }}-${{ hashFiles('ci/script/download_android_dependencies.sh', 'ci/script/prepare_android_dependencies.py') }}
+
+      - name: Download Android dependencies
+        if: steps.cache-manual-deps.outputs.cache-hit != 'true'
+        run: bash ci/script/download_android_dependencies.sh full "$MANUAL_DEPS_DIR"
+
+      - name: Prepare Android dependencies
+        run: |
+          python3 ci/script/prepare_android_dependencies.py \
+            --profile full \
+            --archives "$MANUAL_DEPS_DIR" \
+            --repository "$GITHUB_WORKSPACE"
+
+      # 上游 prepare 脚本会重建 app/libs，把本定制的 ffmpeg AAR 冲掉；这里回填。
+      - name: Restore custom ffmpeg-kit AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s ci-assets/ffmpeg-kit-local.aar || {
+            echo "ci-assets/ffmpeg-kit-local.aar 缺失，定制构建需要它" >&2
+            exit 1
+          }
+          mkdir -p app/libs
+          cp -f ci-assets/ffmpeg-kit-local.aar app/libs/ffmpeg-kit-local.aar
+          test -s app/libs/ffmpeg-kit-local.aar
+          echo "ffmpeg AAR 大小: $(stat -c %s app/libs/ffmpeg-kit-local.aar) 字节"
+
+      - name: Restore native ripgrep cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/native_ripgrep/target
+          key: native-ripgrep-arm64-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.ANDROID_NDK_VERSION }}-api-${{ env.ANDROID_API_LEVEL }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('tools/native_ripgrep/Cargo.toml', 'tools/native_ripgrep/Cargo.lock', 'tools/native_ripgrep/**/*.rs') }}
+
+      - name: Build native ripgrep
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup target add --toolchain "$RUST_VERSION" aarch64-linux-android
+          cargo "+$RUST_VERSION" build \
+            --manifest-path tools/native_ripgrep/Cargo.toml \
+            --release \
+            --target aarch64-linux-android \
+            --locked
+          install -Dm755 \
+            tools/native_ripgrep/target/aarch64-linux-android/release/liboperit_ripgrep.so \
+            app/src/main/jniLibs/arm64-v8a/liboperit_ripgrep.so
+          test -s app/src/main/jniLibs/arm64-v8a/liboperit_ripgrep.so
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g pnpm@10.34.5
+          npm ci --no-audit --no-fund
+          npm --prefix web-chat ci --no-audit --no-fund
+          npm --prefix annual-report ci --no-audit --no-fund
+
+      - name: Build WebChat assets
+        run: npm run build:webchat
+
+      - name: Build annual report assets
+        run: npm run build:annualreport
+
+      - name: Build bundled ToolPkg packages
+        run: |
+          npm run build:examples:github
+          python3 tools/example_packages/sync_example_packages.py --no-hot-reload
+
+      # aarch64 本地特化项在 x86 runner 上会打挂构建：去掉 JDK 路径与 aapt2 覆盖。
+      - name: Strip aarch64-only gradle.properties overrides
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i '/^org\.gradle\.java\.home=/d' gradle.properties
+          sed -i '/^android\.aapt2FromMavenOverride=/d' gradle.properties
+          echo "--- gradle.properties (filtered) ---"
+          grep -vE '^\s*$' gradle.properties
+
+      - name: Configure Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Run Gradle build
+        env:
+          DISPATCH_GRADLE_TASK: ${{ inputs.gradle_task }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            push|pull_request) gradle_task=assembleDebug ;;
+            workflow_dispatch) gradle_task="${DISPATCH_GRADLE_TASK:-assembleDebug}" ;;
+            *) echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 2 ;;
+          esac
+          chmod +x ./gradlew
+          ./gradlew "$gradle_task" --stacktrace --no-daemon
+
+      - name: Upload Android reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit-custom-reports-${{ github.run_number }}
+          path: |
+            app/build/reports/**
+            build/reports/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit-custom-apk-${{ github.run_number }}
+          path: |
+            app/build/outputs/apk/**/*.apk
+            app/build/outputs/bundle/**/*.aab
+          if-no-files-found: warn
+          retention-days: 14

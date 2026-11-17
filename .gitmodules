@@ -1,0 +1,2 @@
+# terminal 与 tools/hotbuild/OperitNightlyRelease 在本定制仓库中已展开为普通目录，
+# 不再作为 git submodule；此文件保留为空占位，避免 CI 尝试 submodule update。
