@@ -1,0 +1,85 @@
+{
+  "formatVersion" : "1.1",
+  "createdBy" : {
+    "gradle" : {
+      "version" : "8.7"
+    }
+  },
+  "component" : {
+    "group" : "com.github.topjohnwu",
+    "module" : "libsu",
+    "version" : "6.0.0",
+    "attributes" : {
+      "org.gradle.status" : "release"
+    }
+  },
+  "variants" : [ {
+    "name" : "releaseVariantReleaseApiPublication",
+    "attributes" : {
+      "org.gradle.category" : "library",
+      "org.gradle.dependency.bundling" : "external",
+      "org.gradle.libraryelements" : "aar",
+      "org.gradle.usage" : "java-api"
+    },
+    "files" : [ {
+      "name" : "nio-6.0.0.aar",
+      "url" : "nio-6.0.0.aar",
+      "size" : 44800,
+      "sha512" : "76518dc9b42bc1b32953ffd90a771ca5bcb410d92b73fbad6c0b5b803593c3879f5544cb27fef241edc4eee7f6f356cf97d3b212a076c6c4dd665a6b40c6550f",
+      "sha256" : "3e09941c62ed773ea09f77efc707f64b3748470ddf8dafcc8c49b89a68f0343b",
+      "sha1" : "549efd21137dae68864ca878177958863e15f7ce",
+      "md5" : "8d15a3906ac4464beba5f2fed23cd54d"
+    } ]
+  }, {
+    "name" : "releaseVariantReleaseRuntimePublication",
+    "attributes" : {
+      "org.gradle.category" : "library",
+      "org.gradle.dependency.bundling" : "external",
+      "org.gradle.libraryelements" : "aar",
+      "org.gradle.usage" : "java-runtime"
+    },
+    "files" : [ {
+      "name" : "nio-6.0.0.aar",
+      "url" : "nio-6.0.0.aar",
+      "size" : 44800,
+      "sha512" : "76518dc9b42bc1b32953ffd90a771ca5bcb410d92b73fbad6c0b5b803593c3879f5544cb27fef241edc4eee7f6f356cf97d3b212a076c6c4dd665a6b40c6550f",
+      "sha256" : "3e09941c62ed773ea09f77efc707f64b3748470ddf8dafcc8c49b89a68f0343b",
+      "sha1" : "549efd21137dae68864ca878177958863e15f7ce",
+      "md5" : "8d15a3906ac4464beba5f2fed23cd54d"
+    } ]
+  }, {
+    "name" : "releaseVariantReleaseSourcePublication",
+    "attributes" : {
+      "org.gradle.category" : "documentation",
+      "org.gradle.dependency.bundling" : "external",
+      "org.gradle.docstype" : "sources",
+      "org.gradle.usage" : "java-runtime"
+    },
+    "files" : [ {
+      "name" : "nio-6.0.0.jar",
+      "url" : "nio-6.0.0.jar",
+      "size" : 25520,
+      "sha512" : "b879a1f80b3f027448286040e62c4dc6fa98314714509001e960c4dd0c344349f2a473e638c03d29c530dae52626f74b7192fbd1e6ec0f91d8037156abef5e9a",
+      "sha256" : "79e346690855fa40e662c23ef96169ca4d6b24ce258fe72a70f55d287fffcb96",
+      "sha1" : "1e5ad8f60873757aeaab72fb860b36bd0e84162a",
+      "md5" : "d7cd87112fb1a29cda822a482e905889"
+    } ]
+  }, {
+    "name" : "releaseVariantReleaseJavaDocPublication",
+    "attributes" : {
+      "org.gradle.category" : "documentation",
+      "org.gradle.dependency.bundling" : "external",
+      "org.gradle.docstype" : "javadoc",
+      "org.gradle.usage" : "java-runtime"
+    },
+    "files" : [ {
+      "name" : "nio-6.0.0.jar",
+      "url" : "nio-6.0.0.jar",
+      "size" : 324667,
+      "sha512" : "18197c213b122cc46b8ae743097a6e16d2dd2a2066c8ee39ff42dc7ba0f5a07aab2003f5fc3dfe2e035154b9a4eb8311c61cdb19b7bb2c250cbca98217846bea",
+      "sha256" : "53d298f4f85679baca94e71536471df78b7397eb8e962530d68d01dea46577ca",
+      "sha1" : "fe8475c0355ab82143c0cdc1059a1e553d17e008",
+      "md5" : "3572ea1bfd287a927da16233d7274f4a"
+    } ]
+  } ]
+}

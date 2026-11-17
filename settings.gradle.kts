@@ -14,7 +14,16 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        // 同上：CI 上官方源优先，镜像作回退。
+        // 本地预置的 jitpack 构件（RenderX / libsu），避免 jitpack 抖动导致解析失败。
+        // 路径相对 settings.gradle.kts，CI 与本地都可用。
+        maven {
+            url = uri(rootDir.resolve("ci-assets/m2"))
+            metadataSources {
+                mavenPom()
+                artifact()
+            }
+        }
+        // CI 上官方源优先，镜像作回退。
         google()
         mavenCentral()
         maven("https://maven.aliyun.com/repository/google")
