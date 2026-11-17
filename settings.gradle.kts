@@ -1,25 +1,26 @@
 pluginManagement {
     repositories {
-        // 国内镜像前置：dl.google.com 在本机 TLS 握手会被切断
+        // GitHub Actions（海外 runner）优先走官方源；阿里云镜像对海外 IP 会 502。
+        // 国内本地构建时若官方源被 TLS 切断，可自动回退到下面的镜像。
+        google()
+        mavenCentral()
+        gradlePluginPortal()
         maven("https://maven.aliyun.com/repository/gradle-plugin")
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/public")
         maven("https://repo.huaweicloud.com/repository/gradle-plugin/")
-        google()
-        gradlePluginPortal()
-        mavenCentral()
     }
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        // 同上：dl.google.com / repo1.maven.org 直连不稳，镜像优先
+        // 同上：CI 上官方源优先，镜像作回退。
+        google()
+        mavenCentral()
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
         maven("https://maven.aliyun.com/repository/public")
         maven("https://repo.huaweicloud.com/repository/maven/")
-        google()
-        mavenCentral()
         maven { url = uri("https://jitpack.io") }
         maven { url = uri("https://dl.bintray.com/rikkaw/Shizuku") }
         maven { url = uri("https://api.xposed.info/") }

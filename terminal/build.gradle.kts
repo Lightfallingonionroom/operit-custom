@@ -65,6 +65,10 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // libsudo.so 是 2 字节占位文件（非有效 ELF），NDK 的 llvm-strip 会报
+            // "not recognized as a valid object file" 并中断 mergeDebugNativeLibs。
+            // 这里显式跳过 strip。
+            keepDebugSymbols += setOf("**/libsudo.so")
         }
     }
 }
