@@ -64,6 +64,40 @@ object SystemToolPrompts {
         )
     )
     
+    val backgroundScreenToolsCn = SystemToolPromptCategory(
+        categoryName = "后台虚拟屏（不打扰前台）",
+        tools = listOf(
+            ToolPrompt(
+                name = "start_background_screen",
+                description = "建立一块后台虚拟屏幕，让后续手机操作在该屏上进行、不打扰用户当前前台。" +
+                    "需要 Shizuku/ADB/Root 调试权限。返回 agentId；之后把 agentId 作为 agent_id 传给 " +
+                    "tap / swipe / set_input_text / capture_screenshot / start_app，即可继续在该后台屏操作，" +
+                    "无需重复调用本工具。典型场景：用户让你在后台跑一个 App、而你不想把他正在用的界面顶掉。",
+                parametersStructured = listOf(
+                    ToolParameterSchema(
+                        name = "agent_id",
+                        type = "string",
+                        description = "可选，自定义屏标识；不传则自动生成 bg-<时间戳>",
+                        required = false,
+                        default = ""
+                    )
+                )
+            ),
+            ToolPrompt(
+                name = "close_background_screen",
+                description = "关闭 start_background_screen 建立的后台虚拟屏，释放其显示与截图资源。",
+                parametersStructured = listOf(
+                    ToolParameterSchema(
+                        name = "agent_id",
+                        type = "string",
+                        description = "要关闭的后台屏标识，即 start_background_screen 返回的那个",
+                        required = true
+                    )
+                )
+            )
+        )
+    )
+
     val basicToolsCn = SystemToolPromptCategory(
         categoryName = "可用工具",
         tools = listOf(
@@ -615,7 +649,8 @@ object SystemToolPrompts {
             basicToolsCn,
             adjustedFileSystemTools,
             httpToolsCn,
-            memoryToolsCn
+            memoryToolsCn,
+            backgroundScreenToolsCn
         )
     }
 

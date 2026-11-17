@@ -6,6 +6,9 @@ import com.ai.assistance.operit.core.chat.hooks.PromptFinalizeHook
 import com.ai.assistance.operit.core.chat.hooks.PromptHookContext
 import com.ai.assistance.operit.core.chat.hooks.PromptHookMutation
 import com.ai.assistance.operit.core.chat.hooks.PromptHookRegistry
+import com.ai.assistance.operit.core.chat.hooks.PromptTurn
+import com.ai.assistance.operit.core.chat.hooks.PromptTurnKind
+import com.ai.assistance.operit.core.chat.hooks.withContent
 import com.ai.assistance.operit.core.chat.hooks.SystemPromptComposeHook
 import com.ai.assistance.operit.core.chat.hooks.ToolPromptComposeHook
 import com.ai.assistance.operit.util.AppLogger
@@ -112,8 +115,38 @@ object PurgeEngine {
     }
 
     fun enabledPatchCount(): Int = patchState.count { it.value }
-
     fun applicablePatchCount(): Int = PurgePatchCatalog.applicable.size
+
+    /**
+     * 一键全开：把所有可落地的补丁（非 N_A）置为启用，并打开总开关。
+     * 批量写入一次 commit，避免逐项 apply 抖动。
+     */
+    fun enableAll() {
+        ensureInitialized()
+        val editor = prefs.edit()
+        PurgePatchCatalog.ALL.forEach { def ->
+            if (def.kind != PortKind.N_A) {
+                patchState[def.id] = true
+                editor.putBoolean(patchKey(def.id), true)
+            }
+        }
+        _enabled.value = true
+        editor.putBoolean(KEY_ENABLED, true)
+        editor.apply()
+        AppLogger.i(TAG, "enableAll patches=${patchState.count { it.value }}")
+    }
+
+    /** 一键全关：所有补丁置为关闭。总开关保持原状，便于只清空补丁。 */
+    fun disableAll() {
+        ensureInitialized()
+        val editor = prefs.edit()
+        patchState.keys.toList().forEach { id ->
+            patchState[id] = false
+            editor.putBoolean(patchKey(id), false)
+        }
+        editor.apply()
+        AppLogger.i(TAG, "disableAll")
+    }
 
     /** 退出/还原：关掉总开关并摘掉三个内置 hook，恢复 Operit 原始提示词链路。 */
     fun shutdown() {
@@ -189,7 +222,6 @@ object PurgeEngine {
      */
     private val finalizeHook = object : PromptFinalizeHook {
         override val id: String = HOOK_FINAL
-
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
             var mutated = false
@@ -198,11 +230,26 @@ object PurgeEngine {
             var prepared = context.preparedHistory
             var tools = context.availableTools
 
+            // Operit 的真实 system prompt 不在 context.systemPrompt（那里恒为 null），
+            // 而是作为 preparedHistory 里第一个 SYSTEM turn 存在。
+            // 这里两路都处理：显式字段 + preparedHistory/chatHistory 内的 SYSTEM turn。
             val sys = systemPrompt
             if (sys != null) {
                 val r = PurgePromptRewriter.rewriteFinalize(sys, patchState)
                 if (r != sys) {
                     systemPrompt = r
+                    mutated = true
+                }
+            }
+            if (patchState.isNotEmpty()) {
+                val (rPrepared, changedPrepared) = rewriteSystemTurns(prepared)
+                if (changedPrepared) {
+                    prepared = rPrepared
+                    mutated = true
+                }
+                val (rHistory, changedHistory) = rewriteSystemTurns(history)
+                if (changedHistory) {
+                    history = rHistory
                     mutated = true
                 }
             }
@@ -227,7 +274,6 @@ object PurgeEngine {
                     mutated = true
                 }
             }
-
             if (!mutated) return null
             return PromptHookMutation(
                     systemPrompt = systemPrompt,
@@ -236,7 +282,25 @@ object PurgeEngine {
                     availableTools = tools
             )
         }
-    }
+
+        /** 把列表里每一个 SYSTEM turn 的正文过一遍 rewriteFinalize。 */
+        private fun rewriteSystemTurns(
+                turns: List<PromptTurn>
+        ): Pair<List<PromptTurn>, Boolean> {
+            if (turns.isEmpty()) return turns to false
+            var changed = false
+            val out = turns.map { turn ->
+                if (turn.kind == PromptTurnKind.SYSTEM) {
+                    val r = PurgePromptRewriter.rewriteFinalize(turn.content, patchState)
+                    if (r != turn.content) {
+                        changed = true
+                        turn.withContent(r)
+                    } else turn
+                } else turn
+            }
+            return if (changed) out to true else turns to false
+        }
+}
 
     // ---------- 内部 ----------
 

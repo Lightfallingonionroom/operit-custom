@@ -1,5 +1,6 @@
 package com.ai.assistance.operit.ui.features.purge.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,16 +9,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -29,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -156,6 +161,8 @@ fun PurgeConsoleScreen(onNavigateBack: () -> Unit) {
 
 @Composable
 private fun PatchTab(refreshTick: Int, onRefresh: () -> Unit) {
+    // 每一层是否展开；默认全部收起，把 82 项压成 4 行标题。
+    val expanded = remember { mutableStateMapOf<String, Boolean>() }
     LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -163,45 +170,91 @@ private fun PatchTab(refreshTick: Int, onRefresh: () -> Unit) {
                     vertical = 8.dp
             )
     ) {
+        item(key = "bulk_actions") {
+            Row(
+                    modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            PurgeEngine.enableAll()
+                            onRefresh()
+                        }
+                ) { Text("一键全开") }
+                OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            PurgeEngine.disableAll()
+                            onRefresh()
+                        }
+                ) { Text("全部关闭") }
+            }
+        }
         LAYER_ORDER.forEach { (layer, label) ->
             val defs = PurgePatchCatalog.ALL.filter { it.layer == layer }
             if (defs.isEmpty()) return@forEach
+            val isOpen = expanded[layer.name] == true
             item(key = "header_${layer.name}") {
-                Text(
-                        "$label（${defs.count { PurgeEngine.isPatchEnabled(it.id) }}/${defs.size}）",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                )
-            }
-            items(defs, key = { it.id }) { def ->
-                val checked = remember(def.id, refreshTick) { PurgeEngine.isPatchEnabled(def.id) }
                 Row(
                         modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 6.dp),
+                                .clickable {
+                                    expanded[layer.name] = !isOpen
+                                }
+                                .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                                "#${def.id} ${def.name}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                                def.meaning + " · " + def.target +
-                                        if (def.kind == PortKind.N_A) " · 不适用" else "",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Text(
+                            if (isOpen) "▾" else "▸",
+                            style = MaterialTheme.typography.titleSmall
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                            "$label（${defs.count { PurgeEngine.isPatchEnabled(it.id) }}/${defs.size}）",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                            if (isOpen) "收起" else "展开",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            if (isOpen) {
+                items(defs, key = { it.id }) { def ->
+                    val checked = remember(def.id, refreshTick) { PurgeEngine.isPatchEnabled(def.id) }
+                    Row(
+                            modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                    "#${def.id} ${def.name}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                    def.meaning + " · " + def.target +
+                                            if (def.kind == PortKind.N_A) " · 不适用" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                                checked = checked,
+                                onCheckedChange = {
+                                    PurgeEngine.setPatchEnabled(def.id, it)
+                                    onRefresh()
+                                },
+                                enabled = def.kind != PortKind.N_A
                         )
                     }
-                    Switch(
-                            checked = checked,
-                            onCheckedChange = {
-                                PurgeEngine.setPatchEnabled(def.id, it)
-                                onRefresh()
-                            },
-                            enabled = def.kind != PortKind.N_A
-                    )
                 }
             }
         }
