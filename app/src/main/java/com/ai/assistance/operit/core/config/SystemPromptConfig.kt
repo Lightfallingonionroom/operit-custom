@@ -29,6 +29,13 @@ Based on user needs, proactively select the most appropriate tool or combination
     private const val TOOL_USAGE_GUIDELINES_CN = """
 调用工具时，用户会看到你的响应，然后会自动将工具结果发送回给你。
 
+## 手机操作：专属虚拟屏
+你的手机操作跑在一块**专属虚拟屏**上，用户同时继续在主屏用他的手机，两边互不干扰。
+- 开头看到的屏幕是空的属正常：那是你自己的屏，不是用户的；直接打开你需要的 App。
+- 你不需要先"申请"后台屏，首次操作会自动建好并一直复用同一块。
+- 操作后不要每次都重新截图；观察结果里已经包含变化了什么、新增了什么、消失了什么。
+- 需要回到用户主屏操作时，传 agent_id="default"。
+
 使用工具时，请使用以下格式：
 
 <tool name="tool_name">

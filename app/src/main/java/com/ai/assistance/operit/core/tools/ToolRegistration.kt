@@ -68,11 +68,31 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
     fun s(resId: Int, vararg args: Any): String = context.getString(resId, *args)
 
     // ---- 后台虚拟屏工具所需的本地判定与派发 ----
+    /** 未显式指定 agent_id 时使用的默认后台屏标识。 */
+    val defaultBgAgentId: String = "agent-default"
+
     fun paramTool(tool: AITool, name: String): String? =
         tool.parameters.find { it.name == name }?.value
 
     fun virtualAgentId(tool: AITool): String? =
         paramTool(tool, "agent_id")?.takeIf { it.isNotBlank() && it != "default" }
+
+    /**
+     * 本次调用应该落到哪块屏。
+     *
+     * Mika 语义（cap/phone）：**默认就在后台虚拟屏上跑**，用户主屏不受打扰；
+     * 只有显式传 agent_id="default" 才回到前台主屏。
+     *
+     * 这里返回 null 表示"走前台主屏"，非 null 表示"走后台屏，用这个 agentId"。
+     */
+    fun resolveScreenAgentId(tool: AITool): String? {
+        val raw = paramTool(tool, "agent_id")
+        // 显式要求前台
+        if (raw != null && raw.equals("default", ignoreCase = true)) return null
+        if (raw != null && raw.isNotBlank()) return raw
+        // 未传：默认后台屏（懒建，见 ensureLazyBackgroundScreen）
+        return defaultBgAgentId
+    }
 
     fun toolParamInt(tool: AITool, name: String): Int? = paramTool(tool, name)?.toIntOrNull()
 
@@ -2055,7 +2075,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                 }
             },
             executor = { tool ->
-                val agentId = virtualAgentId(tool)
+                val agentId = resolveScreenAgentId(tool)
                 if (agentId != null && canUseShowerBackground()) {
                     runBlocking(Dispatchers.IO) {
                         val x = toolParamInt(tool, "x") ?: 0
@@ -2495,7 +2515,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                 }
             },
             executor = { tool ->
-                val agentId = virtualAgentId(tool)
+                val agentId = resolveScreenAgentId(tool)
                 if (agentId != null && canUseShowerBackground()) {
                     runBlocking(Dispatchers.IO) {
                         val pkg = paramTool(tool, "package_name")?.takeIf { it.isNotBlank() }
@@ -2809,7 +2829,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             },
             executor = { tool ->
                 runBlocking(Dispatchers.IO) {
-                    val agentId = virtualAgentId(tool)
+                    val agentId = resolveScreenAgentId(tool)
                     if (agentId != null && canUseShowerBackground()) {
                         val okDisplay = ShowerController.getDisplayId(agentId) != null ||
                                 ShowerController.ensureBackgroundDisplay(agentId, context) != null
@@ -2886,7 +2906,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                 }
             },
             executor = { tool ->
-                val agentId = virtualAgentId(tool)
+                val agentId = resolveScreenAgentId(tool)
                 if (agentId != null && canUseShowerBackground()) {
                     runBlocking(Dispatchers.IO) {
                         val text = paramTool(tool, "text") ?: ""
@@ -2943,7 +2963,7 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                 }
             },
             executor = { tool ->
-                val agentId = virtualAgentId(tool)
+                val agentId = resolveScreenAgentId(tool)
                 if (agentId != null && canUseShowerBackground()) {
                     runBlocking(Dispatchers.IO) {
                         val sx = toolParamInt(tool, "start_x") ?: 0

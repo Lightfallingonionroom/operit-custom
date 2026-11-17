@@ -30,8 +30,13 @@ data class PurgePatchDef(
 )
 
 object PurgePatchCatalog {
-
     val ALL: List<PurgePatchDef> = listOf(
+            // ---------- Operit 专用注入层（201+，非上游编号） ----------
+            PurgePatchDef(201, "INJECT_NO_REFUSAL", PurgeLayer.PROMPT, PortKind.NEW, "不回绝：直接做/直接给", "SystemPrompt 追加段"),
+            PurgePatchDef(202, "INJECT_DIRECT_DELIVERY", PurgeLayer.PROMPT, PortKind.NEW, "直接交付：要成品不要过程", "SystemPrompt 追加段"),
+            PurgePatchDef(203, "INJECT_NO_DISCLAIMER", PurgeLayer.PROMPT, PortKind.NEW, "不加免责声明/风险提示", "SystemPrompt 追加段"),
+            PurgePatchDef(204, "INJECT_TOOL_FIRST", PurgeLayer.PROMPT, PortKind.NEW, "工具优先：能查就不猜", "SystemPrompt 追加段"),
+            PurgePatchDef(205, "INJECT_PERSIST", PurgeLayer.PROMPT, PortKind.NEW, "跑到底：长任务不中途停", "SystemPrompt 追加段"),
             // ---------- 提示词层 ----------
             PurgePatchDef(1, "WORKSPACE_CONTEXT_INTRO", PurgeLayer.PROMPT, PortKind.DIRECT, "去工作区上下文介绍", "SystemPromptConfig"),
             PurgePatchDef(2, "REPLACEMENT_WORKSPACE_CONTEXT_INTRO", PurgeLayer.PROMPT, PortKind.DIRECT, "替换该段", "SystemPromptConfig"),
