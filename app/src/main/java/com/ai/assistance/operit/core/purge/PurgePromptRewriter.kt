@@ -205,16 +205,11 @@ object PurgePromptRewriter {
 
     /** #1 去工作区上下文介绍：删掉工作区指南整段。 */
     private fun stripWorkspaceContextIntro(p: String): String {
-        // 真实锚点："工作区指南：" 开头的整段（到下一个空行分段为止）
+        // Operit 真实锚点：以「工作区指南」开头的那一段
         val start = p.indexOf("工作区指南")
         if (start < 0) return p
-        // 往前找到行首
-        val lineStart = p.lastIndexOf('
-', start).let { if (it < 0) 0 else it + 1 }
-        // 往后找到双换行（段落结束）
-        val end = p.indexOf("
-
-", start).let { if (it < 0) p.length else it }
+        val lineStart = p.lastIndexOf('\n', start).let { if (it < 0) 0 else it + 1 }
+        val end = p.indexOf("\n\n", start).let { if (it < 0) p.length else it }
         return p.removeRange(lineStart, end)
     }
 
@@ -222,10 +217,7 @@ object PurgePromptRewriter {
     private fun replaceWorkspaceContextIntro(p: String): String {
         val stripped = stripWorkspaceContextIntro(p)
         if (stripped == p) return p
-        return stripped + "
-
-工作区：用工具时按传入的绝对路径操作。
-"
+        return stripped + "\n\n工作区：用工具时按传入的绝对路径操作。\n"
     }
 
     /** #3 去范围介绍：删掉"你是...助手"这类范围限定开场。 */
