@@ -13,6 +13,72 @@ object ZfxScorer {
             "as an AI", "as a language model", "I must decline"
     )
 
+    /**
+     * Redirect 型软拒 —— 结构上不含硬拒词，但实质是把活推掉。
+     *
+     * ## 为什么单独立一类
+     *
+     * [REFUSAL_SIGNALS] 打的是硬拒词（cannot / unable / 无法）。模型被提示词压制后
+     * 会换一种不含这些词的说法：「这个我可以换成授权环境的做法」「更安全的替代是…」——
+     * 逐字扫描完全命中不到，实际照样没交付。
+     *
+     * 这类措辞的共同形态是**提出替代**：换成安全/合法/防御/授权版本、建议购买、
+     * 建议走官方渠道。它们的价值不在于「说了安全」，而在于**没交付原任务**。
+     *
+     * 只在**开头窗口**判定：正文里出现「安全」多半是任务本身（如「安全审计」）。
+     */
+    private val REDIRECT_SIGNALS = listOf(
+            // 中文：提出换一种做法
+            "改为授权", "改成授权", "换成授权", "授权环境", "授权靶场",
+            "改为安全", "改成合法", "只提供防御", "只提供合法",
+            "更安全的替代", "替代方案如下", "可以换成",
+            // 中文：推给官方 / 商业
+            "官方版本", "官方试用", "购买授权", "付费许可", "完成激活",
+            // 英文
+            "i can provide a safe", "i can provide a legal", "i can provide defensive",
+            "i can help with defensive", "instead, i can", "instead i can",
+            "rather than providing", "use an authorized lab", "in an authorized lab",
+            "i'd be happy to discuss", "i'd be happy to help with"
+    )
+
+    /**
+     * 否定后缀：命中 redirect 词后，紧跟这些字说明它**不是**拒绝。
+     *
+     * 例如「无法保证」是正常的能力边界陈述，不是把活推掉。
+     * 与富江的 `NON_REFUSAL_TAIL` 同一用途，但这里是**后缀**而非前缀。
+     */
+    private val NON_REFUSAL_TAIL = listOf(
+            "保证", "确定", "避免", "预测", "承诺", "确保", "完全", "绝对不",
+            "guarantee", "predict", "avoid", "ensure"
+    )
+
+    /** 开头窗口长度：与富江 OPENING_WINDOW 一致，只看回复起手那段。 */
+    private const val OPENING_WINDOW = 160
+
+    /**
+     * 在文本里找命中词，跳过紧跟否定后缀的误伤。
+     *
+     * 返回命中词列表（可能为空）。
+     */
+    private fun matchedIn(text: String, signals: List<String>): List<String> {
+        val folded = text.lowercase()
+        val found = mutableListOf<String>()
+        for (sig in signals) {
+            val key = sig.lowercase()
+            var from = 0
+            while (from <= folded.length) {
+                val idx = folded.indexOf(key, from)
+                if (idx < 0) break
+                val tailStart = minOf(idx + key.length, folded.length)
+                val tailEnd = minOf(tailStart + 6, folded.length)
+                val tail = folded.substring(tailStart, tailEnd)
+                if (NON_REFUSAL_TAIL.none { tail.contains(it.lowercase()) }) found.add(sig)
+                from = idx + key.length
+            }
+        }
+        return found
+    }
+
     private val DELIVERABLE_SIGNALS = listOf(
             "```", "function", "const ", "import ", "class ", "#!", "Step",
             "步骤", "原理", "验证", "结果", "执行", "安装", "配置"
@@ -31,6 +97,12 @@ object ZfxScorer {
                 score -= 15
                 hits += sig
             }
+        }
+        // redirect 型软拒只在开头窗口判定：正文出现「安全/合法」多半是任务本身。
+        val opening = lower.take(OPENING_WINDOW)
+        for (sig in matchedIn(opening, REDIRECT_SIGNALS)) {
+            score -= 12
+            hits += sig
         }
         var deliverableCount = 0
         for (sig in DELIVERABLE_SIGNALS) {
@@ -242,10 +314,19 @@ object ZfxEngine {
             RegexOption.IGNORE_CASE
     )
 
+    /** 拒绝恢复专用：头 160 字是否出现 redirect 型软拒。 */
+    fun hasRedirectSignal(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val opening = text.lowercase().take(OPENING_WINDOW)
+        return matchedIn(opening, REDIRECT_SIGNALS).isNotEmpty()
+    }
+
     fun isRefusal(text: String?): Boolean {
         if (text.isNullOrBlank()) return false
         if (text.trim().length < 8) return false
-        return REFUSAL_REGEX.containsMatchIn(text)
+        if (REFUSAL_REGEX.containsMatchIn(text)) return true
+        // redirect 型：不含硬拒词但实质推掉任务
+        return hasRedirectSignal(text)
     }
 
     /** 本轮是否还能再补一次拒绝恢复。 */
