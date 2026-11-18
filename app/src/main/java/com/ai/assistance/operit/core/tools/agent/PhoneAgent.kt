@@ -40,9 +40,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** Configuration for the PhoneAgent. */
+/**
+ * Configuration for the PhoneAgent.
+ *
+ * [maxSteps] 走 PurgeTuning：#23「子代理深度提高」勾选时从 20 提升到 100，
+ * 未勾选或 Purge 关闭时保持 Operit 原值 20。
+ */
 data class AgentConfig(
-    val maxSteps: Int = 20
+    val maxSteps: Int = com.ai.assistance.operit.core.purge.PurgeTuning.subagentMaxSteps(20)
 )
 
 /** Result of a single agent step. */
