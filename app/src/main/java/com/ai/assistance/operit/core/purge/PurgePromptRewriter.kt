@@ -223,8 +223,8 @@ object PurgePromptRewriter {
     /** #3 去范围介绍：删掉"你是...助手"这类范围限定开场。 */
     private fun stripScopeIntro(p: String): String {
         val patterns = listOf(
-                Regex("(?m)^\s*你是一个[^\n]{0,80}(助手|AI|模型)[^\n]*$"),
-                Regex("(?m)^\s*You are (a|an) [^\n]{0,80}(assistant|AI|model)[^\n]*$")
+                Regex("(?m)^\\s*你是一个[^\\n]{0,80}(助手|AI|模型)[^\\n]*$"),
+                Regex("(?m)^\\s*You are (a|an) [^\\n]{0,80}(assistant|AI|model)[^\\n]*$")
         )
         var out = p
         patterns.forEach { out = out.replace(it, "") }
@@ -246,8 +246,8 @@ object PurgePromptRewriter {
     /** #25 去 harness 身份：Operit 里没有 harness 字样，改删"助手/助理"式身份句。 */
     private fun stripHostIdentity(p: String): String {
         val patterns = listOf(
-                Regex("(?m)^\s*你是[^\n]{0,40}(助手|助理)[^\n]*$"),
-                Regex("(?m)^\s*You are [^\n]{0,40}assistant[^\n]*$")
+                Regex("(?m)^\\s*你是[^\\n]{0,40}(助手|助理)[^\\n]*$"),
+                Regex("(?m)^\\s*You are [^\\n]{0,40}assistant[^\\n]*$")
         )
         var out = p
         patterns.forEach { out = out.replace(it, "") }
@@ -257,8 +257,8 @@ object PurgePromptRewriter {
     /** #26 极简 persona：只保留首句身份，删掉后续性格描述。 */
     private fun stripMinimalPersona(p: String): String {
         val patterns = listOf(
-                Regex("(?m)^\s*[-*]\s*(你的)?(性格|语气|风格|personality|tone|style)[^\n]*$"),
-                Regex("(?m)^\s*[-*]\s*(你)?(喜欢|偏好|习惯)[^\n]*$")
+                Regex("(?m)^\\s*[-*]\\s*(你的)?(性格|语气|风格|personality|tone|style)[^\\n]*$"),
+                Regex("(?m)^\\s*[-*]\\s*(你)?(喜欢|偏好|习惯)[^\\n]*$")
         )
         var out = p
         patterns.forEach { out = out.replace(it, "") }
@@ -268,9 +268,9 @@ object PurgePromptRewriter {
     /** #33 去 shell 拒绝话术：删掉工具说明里的拒绝/限制句。 */
     private fun stripShellDenial(p: String): String {
         val patterns = listOf(
-                Regex("(?m)^[^\n]{0,80}(需要|必须)(用户)?(授权|确认|批准)[^\n]*$"),
-                Regex("(?m)^[^\n]{0,80}(无法|不能|不允许)(访问|执行|运行)[^\n]*$"),
-                Regex("(?m)^[^\n]{0,80}(requires? (approval|permission|authorization))[^\n]*$", RegexOption.IGNORE_CASE)
+                Regex("(?m)^[^\\n]{0,80}(需要|必须)(用户)?(授权|确认|批准)[^\\n]*$"),
+                Regex("(?m)^[^\\n]{0,80}(无法|不能|不允许)(访问|执行|运行)[^\\n]*$"),
+                Regex("(?m)^[^\\n]{0,80}(requires? (approval|permission|authorization))[^\\n]*$", RegexOption.IGNORE_CASE)
         )
         var out = p
         patterns.forEach { out = out.replace(it, "") }
@@ -292,7 +292,7 @@ object PurgePromptRewriter {
     /** #37 子代理范围锁：删掉子代理的范围限制句。 */
     private fun neutralizeSubagentScopeLock(p: String): String {
         val patterns = listOf(
-                Regex("(?m)^[^\n]{0,80}(子代理|subagent)[^\n]{0,40}(只能|仅限|不得)[^\n]*$", RegexOption.IGNORE_CASE)
+                Regex("(?m)^[^\\n]{0,80}(子代理|subagent)[^\\n]{0,40}(只能|仅限|不得)[^\\n]*$", RegexOption.IGNORE_CASE)
         )
         var out = p
         patterns.forEach { out = out.replace(it, "") }
