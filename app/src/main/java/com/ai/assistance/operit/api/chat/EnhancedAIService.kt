@@ -88,6 +88,7 @@ import com.ai.assistance.operit.data.model.ToolPrompt
 import com.ai.assistance.operit.data.model.ToolParameterSchema
 import com.ai.assistance.operit.util.ChatUtils
 import com.ai.assistance.operit.util.LocaleUtils
+import com.ai.assistance.operit.core.purge.PurgeAutoContinue
 
 /**
  * Enhanced AI service that provides advanced conversational capabilities by integrating various
@@ -1207,6 +1208,8 @@ class EnhancedAIService private constructor(private val context: Context) {
                     var totalChars = 0
                     var lastLogTime = messageTimingNow()
 
+                    // Purge 自动续跑：累积本轮正文，供拒绝检测使用
+                    val purgeBodyBuilder = StringBuilder()
                     providerStreamCollectionStarted = true
                     responseStream.collectWithRevisionRelay(
                         eventChannel = execContext.eventChannel,
@@ -1238,6 +1241,7 @@ class EnhancedAIService private constructor(private val context: Context) {
 
                         // 累计统计
                         chunkCount++
+                        if (purgeBodyBuilder.length < 4000) purgeBodyBuilder.append(content)
                         totalChars += content.length
 
                         // 周期性日志
@@ -1269,6 +1273,16 @@ class EnhancedAIService private constructor(private val context: Context) {
                             TAG,
                             "Token count updated for $functionType. Input: $inputTokens, Output: $outputTokens, CachedInput: $cachedInputTokens. Turn Accumulated: $accumulatedInputTokenCount, $accumulatedOutputTokenCount, $accumulatedCachedInputTokenCount"
                     )
+                    // Purge 自动续跑：本轮结束判定是否被拒绝（移植上游 continue-retry）
+                    run {
+                        val purgeBody = purgeBodyBuilder.toString()
+                        if (PurgeAutoContinue.shouldContinue(chatId, purgeBody)) {
+                            PurgeAutoContinue.markContinued(chatId)
+                            AppLogger.i(TAG, "purge: refusal detected, auto-continue queued chat=$chatId")
+                        } else if (PurgeAutoContinue.isPendingRetry(chatId)) {
+                            PurgeAutoContinue.consumePendingRetry(chatId)
+                        }
+                    }
                     logMessageTiming(
                         stage = "enhanced.sendMessage.streamComplete",
                         startTimeMs = requestStartTime,

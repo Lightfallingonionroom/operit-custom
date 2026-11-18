@@ -269,6 +269,7 @@ object PurgeEngine {
 
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
+            PurgePromptRewriter.setCurrentChatId(context.chatId)
             val current = context.systemPrompt ?: return null
             PurgePromptRewriter.beginTrace()
             val rewritten = PurgePromptRewriter.rewriteSystemPrompt(
@@ -292,6 +293,7 @@ object PurgeEngine {
 
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
+            PurgePromptRewriter.setCurrentChatId(context.chatId)
             val current = context.toolPrompt ?: return null
             PurgePromptRewriter.beginTrace()
             val rewritten = PurgePromptRewriter.rewriteToolPrompt(current, patchState)
@@ -310,6 +312,7 @@ object PurgeEngine {
         override val id: String = HOOK_FINAL
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
+            PurgePromptRewriter.setCurrentChatId(context.chatId)
             var mutated = false
             var systemPrompt = context.systemPrompt
             var history = context.chatHistory

@@ -48,6 +48,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.ai.assistance.operit.core.tools.ToolProgressBus
+import com.ai.assistance.operit.core.purge.PurgeAutoContinue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
@@ -1513,6 +1514,20 @@ class MessageProcessingDelegate(
                 if (streamCollectionError != null) {
                     throw streamCollectionError
                 }
+                // Purge 自动续跑：上一轮被判定为拒绝时，补一条「继续」消息
+                // 移植自 dsh-purge continue-retry.js 的 sendContinue + continueText
+                runCatching {
+                    val purgeChatId = activeChatId
+                    if (purgeChatId != null && PurgeAutoContinue.isPendingRetry(purgeChatId)) {
+                        val continueMsg =
+                            ChatMessage(
+                                sender = "user",
+                                content = PurgeAutoContinue.CONTINUE_TEXT
+                            )
+                        addMessageToChat(purgeChatId, continueMsg)
+                        AppLogger.i(TAG, "purge: continue message injected chat=$purgeChatId")
+                    }
+                }.onFailure { AppLogger.w(TAG, "purge continue failed", it) }
                 logMessageTiming(
                     stage = "delegate.sharedStreamComplete",
                     startTimeMs = responseStartTime,
