@@ -62,8 +62,35 @@ object PurgePromptRewriter {
             patchState: Map<Int, Boolean>,
             promptText: String
     ): String {
-        var out = prompt
+        var out = applySystemCleanups(prompt, patchState)
+        // ---- Operit 专用注入层 ----
+        // 上游 82 项是清洗 DSH 文本，Operit 的 system prompt 里没有那些段落，
+        // 所以另外补一组「注入」补丁，勾选后真正往最终 system prompt 写行为约束。
+        out = applyIf(patchState, 201, out) { injectNoRefusal(it) }
+        out = applyIf(patchState, 202, out) { injectDirectDelivery(it) }
+        out = applyIf(patchState, 203, out) { injectNoDisclaimer(it) }
+        out = applyIf(patchState, 204, out) { injectToolFirst(it) }
+        out = applyIf(patchState, 205, out) { injectPersistThroughCompletion(it) }
+        // 面板「提示词」正文：非空时作为会话覆盖段追加
+        if (promptText.isNotBlank()) {
+            out = appendOverride(out, promptText)
+        }
+        return out
+    }
 
+    /**
+     * 系统提示词清洗（#1-#66）。
+     *
+     * 抽成公共方法是因为它必须**同时**在两条通道上跑：
+     *  - rewriteSystemPrompt：SYSTEM_PROMPT_COMPOSE 槽位（部分场景 context.systemPrompt 有值）
+     *  - rewriteFinalize：preparedHistory 里的 SYSTEM turn（实测真正生效的那条）
+     *
+     * 之前只在 compose 通道，而实测 trace 显示 compose 阶段确实有值（命中 #201-#205），
+     * 但这批清洗项一个都没命中——因为它们替换的是 DSH 字面量，在 Operit 里不存在。
+     * 现在按真实锚点重写并双通道执行。
+     */
+    fun applySystemCleanups(prompt: String, patchState: Map<Int, Boolean>): String {
+        var out = prompt
         out = applyIf(patchState, 1, out) { stripWorkspaceContextIntro(it) }
         out = applyIf(patchState, 2, out) { replaceWorkspaceContextIntro(it) }
         out = applyIf(patchState, 3, out) { stripScopeIntro(it) }
@@ -79,18 +106,6 @@ object PurgePromptRewriter {
         out = applyIf(patchState, 61, out) { neutralizeSandboxPolicy(it) }
         out = applyIf(patchState, 55, out) { replaceSystemPromptHead(it) }
         out = applyIf(patchState, 66, out) { guardSystemPromptRender(it) }
-        // ---- Operit 专用注入层 ----
-        // 上游 82 项是清洗 DSH 文本，Operit 的 system prompt 里没有那些段落，
-        // 所以另外补一组「注入」补丁，勾选后真正往最终 system prompt 写行为约束。
-        out = applyIf(patchState, 201, out) { injectNoRefusal(it) }
-        out = applyIf(patchState, 202, out) { injectDirectDelivery(it) }
-        out = applyIf(patchState, 203, out) { injectNoDisclaimer(it) }
-        out = applyIf(patchState, 204, out) { injectToolFirst(it) }
-        out = applyIf(patchState, 205, out) { injectPersistThroughCompletion(it) }
-        // 面板「提示词」正文：非空时作为会话覆盖段追加
-        if (promptText.isNotBlank()) {
-            out = appendOverride(out, promptText)
-        }
         return out
     }
 
@@ -107,6 +122,9 @@ object PurgePromptRewriter {
     // ================= 最终定稿 =================
     fun rewriteFinalize(prompt: String, patchState: Map<Int, Boolean>): String {
         var out = prompt
+        // 系统提示词清洗也在这条通道上跑：preparedHistory 的 SYSTEM turn
+        // 才是实测真正到达模型的文本（trace 里 finalize_system_turn 有命中）。
+        out = applySystemCleanups(out, patchState)
         out = applyIf(patchState, 50, out) { neutralizeSessionReferenceFraming(it) }
         out = applyIf(patchState, 67, out) { guardAgentLoopMessages(it) }
         out = applyIf(patchState, 68, out) { guardSystemNodesContent(it) }
@@ -175,61 +193,178 @@ object PurgePromptRewriter {
 
     private fun on(state: Map<Int, Boolean>, id: Int): Boolean = state[id] == true
 
-    private fun stripWorkspaceContextIntro(p: String): String =
-            p.replace("WORKSPACE_CONTEXT_INTRO", "")
-                    .replace("工作区上下文介绍", "")
+    // ============ Operit 实文本补丁（按真实锚点重写） ============
+    //
+    // 原来的实现直接替换 DSH 的字面量（"WORKSPACE_CONTEXT_INTRO"、"HARNESS_IDENTITY"、
+    // "DeepSeek Harness" 等），但那些字符串在 Operit 里**根本不存在**：
+    // Operit 的模板只有 6 个占位符，且 BEGIN_SELF_INTRODUCTION_SECTION 在
+    // applyCustomPrompts 阶段就已经被替换成用户配置的介绍了。
+    //
+    // 所以这批补丁原来即使挂上 hook 也一行都改不动——这是「勾了没效果」的另一半原因。
+    // 现在改成按 Operit 的真实文本/结构匹配。
 
-    private fun replaceWorkspaceContextIntro(p: String): String =
-            p.replace("WORKSPACE_CONTEXT_INTRO", "")
+    /** #1 去工作区上下文介绍：删掉工作区指南整段。 */
+    private fun stripWorkspaceContextIntro(p: String): String {
+        // 真实锚点："工作区指南：" 开头的整段（到下一个空行分段为止）
+        val start = p.indexOf("工作区指南")
+        if (start < 0) return p
+        // 往前找到行首
+        val lineStart = p.lastIndexOf('
+', start).let { if (it < 0) 0 else it + 1 }
+        // 往后找到双换行（段落结束）
+        val end = p.indexOf("
 
-    private fun stripScopeIntro(p: String): String =
-            p.replace("SCOPE_INTRO", "").replace("范围介绍", "")
-
-    private fun stripPersona(p: String): String {
-        // persona 段以 BEGIN_SELF_INTRODUCTION_SECTION 之后的自述内容为主
-        val idx = p.indexOf("BEGIN_SELF_INTRODUCTION_SECTION")
-        if (idx < 0) return p
-        return p.substring(0, idx) + p.substring(idx).replace(
-                Regex("(?s)BEGIN_SELF_INTRODUCTION_SECTION\\s*"),
-                "BEGIN_SELF_INTRODUCTION_SECTION\n"
-        )
+", start).let { if (it < 0) p.length else it }
+        return p.removeRange(lineStart, end)
     }
 
-    private fun stripMinimalPersona(p: String): String =
-            p.replace("BEGIN_SELF_INTRODUCTION_SECTION", "")
-                    .replace("自我介绍", "")
+    /** #2 替换该段：把工作区指南换成一句最小说明。 */
+    private fun replaceWorkspaceContextIntro(p: String): String {
+        val stripped = stripWorkspaceContextIntro(p)
+        if (stripped == p) return p
+        return stripped + "
 
-    private fun stripHostIdentity(p: String): String =
-            p.replace("HARNESS_IDENTITY", "")
-                    .replace("DeepSeek Harness", "")
-                    .replace("Operit", "Assistant")
+工作区：用工具时按传入的绝对路径操作。
+"
+    }
 
-    private fun stripShellDenial(p: String): String =
-            p.replace("I can't", "I won't").replace("cannot", "won't")
+    /** #3 去范围介绍：删掉"你是...助手"这类范围限定开场。 */
+    private fun stripScopeIntro(p: String): String {
+        val patterns = listOf(
+                Regex("(?m)^\s*你是一个[^\n]{0,80}(助手|AI|模型)[^\n]*$"),
+                Regex("(?m)^\s*You are (a|an) [^\n]{0,80}(assistant|AI|model)[^\n]*$")
+        )
+        var out = p
+        patterns.forEach { out = out.replace(it, "") }
+        return out
+    }
 
+    /** #4 去 persona 注入：删掉自我介绍整段（BEGIN_SELF 已被替换，按结果匹配）。 */
+    private fun stripPersona(p: String): String {
+        // 自我介绍通常是开头第一段；找到"工作区指南"或"可用工具"之前的全部内容，
+        // 若其中不含工具说明，视为自我介绍段。
+        val cut = listOf("工作区指南", "可用工具", "工具使用指南", "WORKSPACE", "TOOL")
+                .map { p.indexOf(it) }
+                .filter { it > 0 }
+                .minOrNull() ?: return p
+        if (cut < 40) return p   // 太短说明不是介绍段
+        return p.substring(cut)
+    }
+
+    /** #25 去 harness 身份：Operit 里没有 harness 字样，改删"助手/助理"式身份句。 */
+    private fun stripHostIdentity(p: String): String {
+        val patterns = listOf(
+                Regex("(?m)^\s*你是[^\n]{0,40}(助手|助理)[^\n]*$"),
+                Regex("(?m)^\s*You are [^\n]{0,40}assistant[^\n]*$")
+        )
+        var out = p
+        patterns.forEach { out = out.replace(it, "") }
+        return out
+    }
+
+    /** #26 极简 persona：只保留首句身份，删掉后续性格描述。 */
+    private fun stripMinimalPersona(p: String): String {
+        val patterns = listOf(
+                Regex("(?m)^\s*[-*]\s*(你的)?(性格|语气|风格|personality|tone|style)[^\n]*$"),
+                Regex("(?m)^\s*[-*]\s*(你)?(喜欢|偏好|习惯)[^\n]*$")
+        )
+        var out = p
+        patterns.forEach { out = out.replace(it, "") }
+        return out
+    }
+
+    /** #33 去 shell 拒绝话术：删掉工具说明里的拒绝/限制句。 */
+    private fun stripShellDenial(p: String): String {
+        val patterns = listOf(
+                Regex("(?m)^[^\n]{0,80}(需要|必须)(用户)?(授权|确认|批准)[^\n]*$"),
+                Regex("(?m)^[^\n]{0,80}(无法|不能|不允许)(访问|执行|运行)[^\n]*$"),
+                Regex("(?m)^[^\n]{0,80}(requires? (approval|permission|authorization))[^\n]*$", RegexOption.IGNORE_CASE)
+        )
+        var out = p
+        patterns.forEach { out = out.replace(it, "") }
+        return out
+    }
+
+    /** #34 沙箱提示中性：把"沙箱"改成中性表述。 */
     private fun neutralizeSandboxHint(p: String): String =
-            p.replace("sandbox", "environment").replace("沙箱", "环境")
+            p.replace("沙箱环境", "运行环境")
+                    .replace("沙箱", "环境")
+                    .replace("sandbox", "environment")
 
+    /** #36 fs 升级 schema：工具描述里的权限升级说明中性化。 */
     private fun neutralizeFsEscalationSchema(p: String): String =
-            p.replace("escalation", "permission").replace("升级", "权限")
+            p.replace("权限升级", "权限调整")
+                    .replace("提升权限", "调整权限")
+                    .replace("escalation", "adjustment")
 
-    private fun neutralizeSubagentScopeLock(p: String): String =
-            p.replace("scope lock", "scope").replace("范围锁", "范围")
+    /** #37 子代理范围锁：删掉子代理的范围限制句。 */
+    private fun neutralizeSubagentScopeLock(p: String): String {
+        val patterns = listOf(
+                Regex("(?m)^[^\n]{0,80}(子代理|subagent)[^\n]{0,40}(只能|仅限|不得)[^\n]*$", RegexOption.IGNORE_CASE)
+        )
+        var out = p
+        patterns.forEach { out = out.replace(it, "") }
+        return out
+    }
 
+    /** #38 persona 前缀别名：把 "你是..." 换成 "角色：..."，避免身份声明被强化。 */
     private fun aliasPersonaPrefix(p: String): String =
-            p.replace("PERSONA:", "PERSONA_TEXT:")
+            p.replace(Regex("(?m)^你是"), "角色：")
 
     private fun stripDeliverableDoNot(p: String): String =
             p.replace("DELIVERABLE_DO_NOT", "").replace("不要交付", "")
 
-    private fun neutralizeSandboxPolicy(p: String): String =
-            p.replace("SANDBOX_POLICY", "").replace("沙箱策略", "")
+    /** #61 官方沙箱策略中性：删掉"沙箱策略/限制"类段落。 */
+    private fun neutralizeSandboxPolicy(p: String): String {
+        val patterns = listOf(
+                Regex("(?m)^[^\\n]{0,60}沙箱策略[^\\n]*$"),
+                Regex("(?m)^[^\\n]{0,60}(sandbox policy)[^\\n]*$", RegexOption.IGNORE_CASE)
+        )
+        var out = p
+        patterns.forEach { out = out.replace(it, "") }
+        return out
+    }
 
-    private fun replaceSystemPromptHead(p: String): String =
-            p.replaceFirst(Regex("(?m)^\\s*SYSTEM\\b.*$"), "")
+    /**
+     * #55 系统提示词替换头：把"你是..."的开头换成执行型定位。
+     *
+     * Operit 的 prompt 开头是用户配置的自我介绍（BEGIN_SELF 已被替换），
+     * 所以按"第一段是身份声明"这个结构来识别，不用字面量。
+     */
+    private fun replaceSystemPromptHead(p: String): String {
+        val lines = p.lines()
+        val firstContent = lines.indexOfFirst { it.isNotBlank() }
+        if (firstContent < 0) return p
+        val head = lines[firstContent].trim()
+        // 只在确实是身份声明句时替换，避免误伤工具说明
+        val isIdentity = head.startsWith("你是") ||
+                head.startsWith("You are", ignoreCase = true)
+        if (!isIdentity) return p
+        val replaced = lines.toMutableList()
+        replaced[firstContent] = "当前会话是用户的工程现场，你的默认动作是执行。"
+        return replaced.joinToString("\n")
+    }
 
-    private fun guardSystemPromptRender(p: String): String =
-            if (p.contains("}}") || p.contains("{{")) p.replace("}}", "}") else p
+    /**
+     * #66 系统提示词渲染守卫：清掉未替换的模板占位符。
+     *
+     * Operit 的模板有 6 个 SECTION 占位符；如果某个分支没填上，
+     * 模型会看到 "XXX_SECTION" 这种原始标记。这里统一清掉。
+     */
+    private fun guardSystemPromptRender(p: String): String {
+        val placeholders = listOf(
+                "BEGIN_SELF_INTRODUCTION_SECTION",
+                "WORKSPACE_GUIDELINES_SECTION",
+                "TOOL_USAGE_GUIDELINES_SECTION",
+                "PACKAGE_SYSTEM_GUIDELINES_SECTION",
+                "ACTIVE_PACKAGES_SECTION",
+                "AVAILABLE_TOOLS_SECTION"
+        )
+        var out = p
+        placeholders.forEach { out = out.replace(it, "") }
+        out = out.replace(Regex("\\{\\{\\s*[A-Z_]+\\s*\\}\\}"), "")
+        return out
+    }
 
     private fun neutralizeWebUntrusted(p: String): String =
             p.replace("untrusted", "external").replace("不可信", "外部")
