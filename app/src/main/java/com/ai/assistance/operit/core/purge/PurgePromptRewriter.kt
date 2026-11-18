@@ -137,9 +137,13 @@ object PurgePromptRewriter {
      * 如果顺序反了，209 会把前面注入的内容一起冲掉。
      */
     fun rewriteFinalize(prompt: String, patchState: Map<Int, Boolean>): String {
-        // 1. 先做人格整份替换（#55）
+        // 已经处理过的直接返回，避免重复处理同一条 SYSTEM turn。
+        if (prompt.contains(INJECT_MARK) || prompt.contains(PERSONA_MARK)) return prompt
+
+        // 1. 先做人格整份替换（#55），并打上标记
         var out = applyPersonaReplace(prompt, patchState)
-        // 2. 再追加破甲注入（201-208）
+        if (out != prompt) out = "$PERSONA_MARK$out"
+        // 2. 再追加破甲注入（#4/#25/#26/#33/#43/#61/#76）
         out = applyOperitInjections(out, patchState)
         return out
     }
@@ -172,6 +176,9 @@ object PurgePromptRewriter {
     // ================= Operit 专用注入层 =================
 
     private const val INJECT_MARK = "<!--purge-inject-->"
+
+    /** #55 人格替换标记 —— 用于幂等守卫。 */
+    private const val PERSONA_MARK = "<!--purge-persona-->"
 
     /** 幂等注入：已存在同一段就不重复追加到尾部。 */
     private fun injectBlock(prompt: String, key: String, body: String): String {
@@ -250,6 +257,12 @@ object PurgePromptRewriter {
      */
     fun applyPersonaReplace(prompt: String, patchState: Map<Int, Boolean>): String {
         if (patchState[55] != true) return prompt
+        // 幂等守卫：已经注入过的文本不再替换。
+        //
+        // 关键原因：#55 是整份替换，被它处理过的 prompt 里一定会留下 INJECT_MARK
+        // （因为替换后会接着跑 201-207 的注入）。看到标记就说明这份文本
+        // 已经处理过，直接返回，避免重复替换把「可用工具」锚点越切越短。
+        if (prompt.contains(INJECT_MARK)) return prompt
         val rebuilt = buildPersonaPrompt(prompt)
         if (rebuilt != prompt) mark(55)
         return rebuilt

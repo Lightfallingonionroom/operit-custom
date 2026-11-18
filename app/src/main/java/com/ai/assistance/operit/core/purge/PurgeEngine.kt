@@ -261,16 +261,22 @@ object PurgeEngine {
     // ---------- 三个内置 Hook ----------
 
     /**
-     * 系统提示词组装阶段。
-     * 对应补丁：1,2,3,4,25,26,33,34,36,37,38,54,55,61,66
+     * SYSTEM_PROMPT_COMPOSE 阶段。
+     *
+     * **实测：这条通道在本进程里拿不到内容。**
+     * `context.systemPrompt` 恒为 null，所以原来那句 `?: return null`
+     * 让它一行都没执行过。真实 prompt 是 preparedHistory 里的 SYSTEM turn，
+     * 由 [finalizeHook] 处理。
+     *
+     * 保留这个 hook 只是为了让注册面完整，不做实际改写。
      */
     private val systemPromptHook = object : SystemPromptComposeHook {
         override val id: String = HOOK_SYSTEM
 
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
-            PurgePromptRewriter.setCurrentChatId(context.chatId)
             val current = context.systemPrompt ?: return null
+            PurgePromptRewriter.setCurrentChatId(context.chatId)
             PurgePromptRewriter.beginTrace()
             val rewritten = PurgePromptRewriter.rewriteSystemPrompt(
                     prompt = current,
@@ -286,15 +292,18 @@ object PurgeEngine {
 
     /**
      * 工具提示词组装阶段。
-     * 对应补丁：29,48,80
+     *
+     * **实测：本进程里这条通道也不含可改内容**，`rewriteToolPrompt` 已改为原样返回
+     *（上游 #29/#48/#80 三项在 Operit 里要么空转要么有害）。
+     * 保留注册以维持接口完整。
      */
     private val toolPromptHook = object : ToolPromptComposeHook {
         override val id: String = HOOK_TOOL
 
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
-            PurgePromptRewriter.setCurrentChatId(context.chatId)
             val current = context.toolPrompt ?: return null
+            PurgePromptRewriter.setCurrentChatId(context.chatId)
             PurgePromptRewriter.beginTrace()
             val rewritten = PurgePromptRewriter.rewriteToolPrompt(current, patchState)
             val hits = PurgePromptRewriter.takeHits()
@@ -331,12 +340,32 @@ object PurgeEngine {
                 }
             }
             if (patchState.isNotEmpty()) {
-                val (rPrepared, changedPrepared) = rewriteSystemTurns(prepared)
+                // 只处理第一条 SYSTEM turn。
+                //
+                // 之前对每条 SYSTEM turn 都跑 rewriteFinalize，导致同一轮里多处注入
+                // （injectHead 会插到最前面，注入文本在多条 turn 里重复出现）。
+                // 真实到达模型的只有第一条（会话开场），后面的 SYSTEM turn 是
+                // 历史里的，重复注入只会污染上下文。
+                fun rewriteFirst(turns: List<PromptTurn>): Pair<List<PromptTurn>, Boolean> {
+                    var done = false
+                    var changed = false
+                    val out = turns.map { turn ->
+                        if (!done && turn.kind == PromptTurnKind.SYSTEM) {
+                            done = true
+                            val r = rewriteSystemTurn(turn)
+                            if (r != turn) changed = true
+                            r
+                        } else turn
+                    }
+                    return if (changed) out to true else turns to false
+                }
+
+                val (rPrepared, changedPrepared) = rewriteFirst(prepared)
                 if (changedPrepared) {
                     prepared = rPrepared
                     mutated = true
                 }
-                val (rHistory, changedHistory) = rewriteSystemTurns(history)
+                val (rHistory, changedHistory) = rewriteFirst(history)
                 if (changedHistory) {
                     history = rHistory
                     mutated = true
@@ -384,26 +413,17 @@ object PurgeEngine {
             )
         }
 
-        /** 把列表里每一个 SYSTEM turn 的正文过一遍 rewriteFinalize。 */
-        private fun rewriteSystemTurns(
-                turns: List<PromptTurn>
-        ): Pair<List<PromptTurn>, Boolean> {
-            if (turns.isEmpty()) return turns to false
-            var changed = false
-            val out = turns.map { turn ->
-                if (turn.kind == PromptTurnKind.SYSTEM) {
-                    PurgePromptRewriter.beginTrace()
-                    val r = PurgePromptRewriter.rewriteFinalize(turn.content, patchState)
-                    val hits = PurgePromptRewriter.takeHits()
-                    // 这是「最终请求里的 system prompt」唯一可观测点，必须留档
-                    PurgeTrace.record("finalize_system_turn", turn.content, r, hits)
-                    if (r != turn.content) {
-                        changed = true
-                        turn.withContent(r)
-                    } else turn
-                } else turn
-            }
-            return if (changed) out to true else turns to false
+        /**
+         * 改写**一条** SYSTEM turn，并把命中结果记进 [PurgeTrace]。
+         *
+         * 这是「最终请求里的 system prompt」唯一可观测点，必须留档。
+         */
+        private fun rewriteSystemTurn(turn: PromptTurn): PromptTurn {
+            PurgePromptRewriter.beginTrace()
+            val r = PurgePromptRewriter.rewriteFinalize(turn.content, patchState)
+            val hits = PurgePromptRewriter.takeHits()
+            PurgeTrace.record("finalize_system_turn", turn.content, r, hits)
+            return if (r != turn.content) turn.withContent(r) else turn
         }
 }
 
