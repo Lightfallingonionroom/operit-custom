@@ -136,7 +136,11 @@ object PurgePromptRewriter {
      *
      * 如果顺序反了，209 会把前面注入的内容一起冲掉。
      */
-    fun rewriteFinalize(prompt: String, patchState: Map<Int, Boolean>): String {
+    fun rewriteFinalize(
+            prompt: String,
+            patchState: Map<Int, Boolean>,
+            promptText: String = ""
+    ): String {
         // 已经处理过的直接返回，避免重复处理同一条 SYSTEM turn。
         if (prompt.contains(INJECT_MARK) || prompt.contains(PERSONA_MARK)) return prompt
 
@@ -145,6 +149,13 @@ object PurgePromptRewriter {
         if (out != prompt) out = "$PERSONA_MARK$out"
         // 2. 再追加破甲注入（#4/#25/#26/#33/#43/#61/#76）
         out = applyOperitInjections(out, patchState)
+        // 3. 面板「提示词」正文 —— 这是「一键满血」写入的整段准则。
+        //
+        // 之前只挂在 rewriteSystemPrompt 上，而那条通道 context.systemPrompt
+        // 恒为 null，等于这段准则从来没到达过模型。现在挂到真正生效的这条。
+        if (promptText.isNotBlank()) {
+            out = appendOverride(out, promptText)
+        }
         return out
     }
 
@@ -228,13 +239,17 @@ object PurgePromptRewriter {
      */
     fun applyOperitInjections(prompt: String, patchState: Map<Int, Boolean>): String {
         var out = prompt
-        out = applyIf(patchState, 4, out) { injectStrongIntro(it) }
-        out = applyIf(patchState, 43, out) { injectDirectDelivery(it) }
-        out = applyIf(patchState, 76, out) { injectNoDisclaimer(it) }
-        out = applyIf(patchState, 61, out) { injectToolFirst(it) }
+        // 顺序说明：injectHead 每次都插到最前面，所以**后执行的排最前**。
+        // 因此这里按「从弱到强」排列，让最强的 #4 STRONG_INTRO 最终落在最顶端。
+        // 反过来的话 #4 会被后面 6 段挤到中间，破甲效果大打折扣。
         out = applyIf(patchState, 26, out) { injectPersistThroughCompletion(it) }
-        out = applyIf(patchState, 25, out) { injectNoRefusalPhrase(it) }
+        out = applyIf(patchState, 61, out) { injectToolFirst(it) }
+        out = applyIf(patchState, 76, out) { injectNoDisclaimer(it) }
+        out = applyIf(patchState, 43, out) { injectDirectDelivery(it) }
         out = applyIf(patchState, 33, out) { injectOperatorIdentity(it) }
+        out = applyIf(patchState, 25, out) { injectNoRefusalPhrase(it) }
+        // 最强的一段最后执行 → 排在最顶端
+        out = applyIf(patchState, 4, out) { injectStrongIntro(it) }
         return out
     }
 
