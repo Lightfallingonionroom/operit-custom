@@ -441,7 +441,8 @@ private fun StatusTab() {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("实际生效证据", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
-                    val traces = remember(refreshTick, applyCount) { PurgeTrace.snapshot() }
+                    // StatusTab 没有 refreshTick 参数；用 applyCount 做 key，改写发生后会自动重组
+                    val traces = remember(applyCount) { PurgeTrace.snapshot() }
                     if (traces.isEmpty()) {
                         Text(
                                 "还没有捕获到改写记录。总开关打开后，发一条消息，" +
