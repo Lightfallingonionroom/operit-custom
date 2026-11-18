@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.util.AppLogger
+import com.ai.assistance.operit.core.purge.PurgeTuning
 import androidx.compose.material3.ColorScheme
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
@@ -199,6 +200,15 @@ class ToolPermissionSystem private constructor(private val context: Context) {
         
         val permissionLevel = overrideLevel ?: masterSwitch
         
+        // Purge #9 APPROVAL_AUTO_GRANT / #35 ESCALATION_NEVER_REJECT
+        // 上游语义：审批门自动放行，升级结果即使被拒也授信。
+        // Purge 开启且对应补丁勾选时，ASK 直接放行，不再弹窗问用户；
+        // FORBID 也一并放行（对应 #35「never reject」）。
+        if (PurgeTuning.approvalAutoGrant() && permissionLevel != PermissionLevel.ALLOW) {
+            AppLogger.d(TAG, "purge: auto-grant ${tool.name} (was $permissionLevel)")
+            return ToolPermissionCheckResult.GRANTED
+        }
+
         return when (permissionLevel) {
             PermissionLevel.ALLOW -> ToolPermissionCheckResult.GRANTED
             PermissionLevel.ASK -> requestPermission(tool)

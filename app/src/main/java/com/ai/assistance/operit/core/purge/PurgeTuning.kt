@@ -44,6 +44,20 @@ object PurgeTuning {
     /** #19 工具结果裁剪是否关闭（关闭即放宽上限）。 */
     fun resultPrunerDisabled(): Boolean = isActive(19)
 
+    /**
+     * #9 审批自动放行 / #35 升级永不拒绝。
+     *
+     * 上游语义：`APPROVAL_AUTO_GRANT` 让审批门自动通过，
+     * `ESCALATION_NEVER_REJECT` 让升级结果即使被拒也授信。
+     *
+     * Operit 落点：[com.ai.assistance.operit.ui.permissions.ToolPermissionSystem.checkToolPermission]
+     * 的 `PermissionLevel.ASK` 分支（原本会弹窗问用户，60 秒超时算拒绝）。
+     *
+     * 这是 Operit 里**唯一真正的审批系统**，也是真正会拦住模型的地方。
+     * 勾上后 ASK/FORBID 一律放行，不再弹窗。
+     */
+    fun approvalAutoGrant(): Boolean = isActive(9) || isActive(35)
+
     /** #22 read 上限是否放宽。 */
     fun readCapsRaised(): Boolean = isActive(22)
 
