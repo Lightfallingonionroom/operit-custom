@@ -238,8 +238,12 @@ object ShowerController {
     /** 每个 agentId 一把建屏锁：并发动作同时到达时只建一次屏，其余等待复用。 */
     private val buildLocks = ConcurrentHashMap<String, Mutex>()
 
-    /** 已在预热中的任务，避免重复发起 */
-    @Volatile private var prewarming = false
+    /** 已在预热中的 agentId 集合。
+     *
+     * 原来是一个全局布尔，两个会话同时预热会互相挡掉，表现为「第二个任务的屏
+     * 永远建不起来、每次动作都重新等建屏」。改成按 agentId 记录。
+     */
+    private val prewarming = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * 建屏耗时主要来自 `ShowerServerManager.ensureServerStarted`（首次启动 shower-server）
@@ -251,15 +255,15 @@ object ShowerController {
      * 预热不阻塞调用方，失败了也不影响后续动作（真正的 ensure 会再试）。
      */
     fun prewarm(agentId: String, context: android.content.Context) {
-        if (prewarming) return
         if (getDisplayId(agentId) != null) return
-        prewarming = true
+        // add 返回 false 表示已在预热中，直接返回
+        if (!prewarming.add(agentId)) return
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 ensureBackgroundDisplay(agentId, context)
             } catch (_: Throwable) {
             } finally {
-                prewarming = false
+                prewarming.remove(agentId)
             }
         }
     }
@@ -286,7 +290,16 @@ object ShowerController {
                             metrics.densityDpi,
                             bitrateKbps
                     )
-            if (ok) getDisplayId(agentId) else null
+            val display = if (ok) getDisplayId(agentId) else null
+            // 建屏成功即登记到会话，后续工具直接用这个 displayId，
+            // 不再让模型自己猜（实测曾出现开屏=12、操作=10 的串线）。
+            if (display != null) {
+                try {
+                    PhoneSession.bindDisplay(agentId, display)
+                } catch (_: Throwable) {
+                }
+            }
+            display
         }
     }
 }

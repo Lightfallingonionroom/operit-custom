@@ -80,19 +80,19 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
     /**
      * 本次调用应该落到哪块屏。
      *
-     * Mika 语义（cap/phone）：**默认就在后台虚拟屏上跑**，用户主屏不受打扰；
-     * 只有显式传 agent_id="default" 才回到前台主屏。
+     * Mika 语义：默认就在后台虚拟屏上跑。这里改为通过 [PhoneSession] 解析，
+     * 保证同一个会话始终是同一块屏——模型不需要传 agent_id，也传不错。
      *
-     * 这里返回 null 表示"走前台主屏"，非 null 表示"走后台屏，用这个 agentId"。
+     * 返回 null 表示走前台主屏，非 null 表示走后台屏。
      */
     fun resolveScreenAgentId(tool: AITool): String? {
-        val raw = paramTool(tool, "agent_id")
-        // 显式要求前台
-        if (raw != null && raw.equals("default", ignoreCase = true)) return null
-        val agentId = if (raw != null && raw.isNotBlank()) raw else defaultBgAgentId
+        val explicit = paramTool(tool, "agent_id")
+        val chatId = paramTool(tool, "chat_id")
+                ?: paramTool(tool, "session_id")
+        val agentId = PhoneSession.resolveAgentId(chatId, explicit) ?: return null
+
         // 顺手预热：建屏耗时藏在后台协程里，不占这次动作的时间。
-        // Mika 的 LazyDisplay 是「第一次操作才建」，我们是「第一次操作时已经建好」。
-        // 注意：canUseShowerBackground 定义在本函数之后（同一 registerAllTools 作用域内的
+        // canUseShowerBackground 定义在本函数之后（同一 registerAllTools 作用域内的
         // 局部函数不能前向引用），所以这里直接做权限判定。
         val canPrewarm = try {
             val level = AndroidPermissionPreferences(context).getPreferredPermissionLevel()
@@ -521,8 +521,14 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                                 error = s(R.string.toolreg_background_screen_no_resource, "permission")
                         )
                     }
-                    val agentId = paramTool(tool, "agent_id")?.takeIf { it.isNotBlank() }
-                        ?: "bg-${System.currentTimeMillis()}"
+                    // 会话级绑定：同一 chat 复用同一 agentId，不再每次生成新 id。
+                    // 之前每次 "bg-时间戳" 都会新建一块屏，旧屏还在，displayId 随之漂移。
+                    val chatId = paramTool(tool, "chat_id")
+                            ?: paramTool(tool, "session_id")
+                    val explicit = paramTool(tool, "agent_id")?.takeIf { it.isNotBlank() }
+                    val agentId = explicit ?: PhoneSession.agentIdFor(chatId)
+                    chatId?.takeIf { it.isNotBlank() }?.let { PhoneSession.bindAgent(it, agentId) }
+
                     val displayId = ShowerController.ensureBackgroundDisplay(agentId, context)
                     if (displayId == null) {
                         ToolResult(
@@ -532,10 +538,15 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                                 error = s(R.string.toolreg_background_screen_no_resource, "display")
                         )
                     } else {
+                        // 回执不再要求模型后续传 agent_id：会话已绑定，工具会自动解析。
                         ToolResult(
                                 toolName = tool.name,
                                 success = true,
-                                result = StringResultData(s(R.string.toolreg_background_screen_created, agentId, displayId))
+                                result = StringResultData(
+                                        "后台虚拟屏已就绪（agent_id=$agentId, displayId=$displayId）。" +
+                                                "本会话后续的 tap/swipe/set_input_text/capture_screenshot/start_app " +
+                                                "直接调用即可，不需要再传 agent_id。"
+                                )
                         )
                     }
                 }
