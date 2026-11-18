@@ -183,12 +183,54 @@ object ZfxEngine {
         return json.toString(2)
     }
 
-    /** 系统提示词组装阶段：persona 段插到最前（最高优先级）。 */
+    /**
+     * 系统提示词组装阶段：persona 段插到最前（最高优先级）。
+     *
+     * ## 幂等（2026-11-18 修）
+     *
+     * `SystemPromptConfig.getSystemPrompt` 对 compose 槽位派发**三次**：
+     *
+     * | stage | systemPrompt | 本 hook |
+     * |---|---|---|
+     * | `before_compose_system_prompt` | null | 提前返回 |
+     * | `compose_system_prompt_sections` | 非 null | **注入第 1 次** |
+     * | `after_compose_system_prompt` | 非 null | **注入第 2 次** |
+     *
+     * 原来没有幂等守卫，square.md 全文被塞了两遍——这就是「两套指令」的根源。
+     * 现在靠 [ZFX_MARK] 去重，只注入一次。
+     *
+     * ## 结束标记
+     *
+     * 用 [ZFX_END] 而不是 `---` 收尾：`---` 在 markdown 里是分隔线，
+     * persona 正文自身可能出现，导致剥离时切错位置。独立标记可安全剥离。
+     */
     fun injectIntoSystemPrompt(prompt: String): String {
         val p = _persona.value
         if (!_enabled.value || p.isBlank()) return prompt
-        return "## Operating Frame\n$p\n\n---\n\n$prompt"
+        if (prompt.contains(ZFX_MARK)) return prompt
+        return "$ZFX_MARK\n## Operating Frame\n$p\n$ZFX_END\n\n$prompt"
     }
+
+    /**
+     * 供 [com.ai.assistance.operit.core.purge.PurgeEngine] 做身份裁决。
+     *
+     * 返回非 null 表示「正方形身份在位」：
+     * - Purge 的 `#55 人格替换` 必须让位，不再覆盖身份层
+     * - Purge 在 compose 阶段停止注入，全部交给 finalize 统一编排
+     *
+     * 这样两个插件同时开启时是**协同**：正方形提供身份与 24 条 Scoped Rules，
+     * Purge 提供系统层拆拦截，而不是互相覆盖。
+     */
+    fun activePersona(): String? {
+        if (!_enabled.value) return null
+        return _persona.value.ifBlank { null }
+    }
+
+    /** persona 段起始标记，跨插件识别用。 */
+    const val ZFX_MARK = "<!--zfx-persona-->"
+
+    /** persona 段结束标记，用于 Purge 侧安全剥离后重排。 */
+    const val ZFX_END = "<!--zfx-end-->"
 
     // ---------- 拒绝恢复 ----------
 

@@ -272,18 +272,35 @@ object PurgeEngine {
     /**
      * SYSTEM_PROMPT_COMPOSE 阶段。
      *
-     * **实测：这条通道在本进程里拿不到内容。**
-     * `context.systemPrompt` 恒为 null，所以原来那句 `?: return null`
-     * 让它一行都没执行过。真实 prompt 是 preparedHistory 里的 SYSTEM turn，
-     * 由 [finalizeHook] 处理。
+     * ## 2026-11-18 修正：这条通道**不是空转**
      *
-     * 保留这个 hook 只是为了让注册面完整，不做实际改写。
+     * 之前的注释判断错了。`SystemPromptConfig.getSystemPrompt` 对 compose 槽位
+     * 派发三次，后两次的 `systemPrompt` 都非 null：
+     *
+     * | stage | systemPrompt |
+     * |---|---|
+     * | `before_compose_system_prompt` | null → 提前返回 |
+     * | `compose_system_prompt_sections` | 非 null → 生效 |
+     * | `after_compose_system_prompt` | 非 null → 生效 |
+     *
+     * 靠 [PurgePromptRewriter] 的 `INJECT_MARK` 幂等，第二次不会重复注入。
+     *
+     * ## ZFX 开启时让出这条通道
+     *
+     * 两边同时注入 compose 会让顺序不可控：ZFX 的 persona 槽位先跑，
+     * Purge 的注入后跑，最终顺序变成「正方形 → 原始 prompt → Purge 注入」，
+     * 破甲声明全被压到尾部——这就是「1+1=1」的机制原因。
+     *
+     * 所以 ZFX 在位时本 hook 直接返回 null，全部交给 [finalizeHook]
+     * 统一编排顺序（元声明 → 身份 → 执行细则 → 原始 prompt）。
      */
     private val systemPromptHook = object : SystemPromptComposeHook {
         override val id: String = HOOK_SYSTEM
 
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
+            // ZFX 在位 → 让出，交给 finalize 统一编排
+            if (com.ai.assistance.operit.core.zfx.ZfxEngine.activePersona() != null) return null
             val current = context.systemPrompt ?: return null
             PurgePromptRewriter.setCurrentChatId(context.chatId)
             PurgePromptRewriter.beginTrace()
@@ -331,18 +348,19 @@ object PurgeEngine {
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
             PurgePromptRewriter.setCurrentChatId(context.chatId)
+            // 正方形身份裁决：非 null 表示 ZFX 在位，#55 让位、顺序重排。
+            val squarePersona = com.ai.assistance.operit.core.zfx.ZfxEngine.activePersona()
             var mutated = false
             var systemPrompt = context.systemPrompt
             var history = context.chatHistory
             var prepared = context.preparedHistory
             var tools = context.availableTools
 
-            // Operit 的真实 system prompt 不在 context.systemPrompt（那里恒为 null），
-            // 而是作为 preparedHistory 里第一个 SYSTEM turn 存在。
-            // 这里两路都处理：显式字段 + preparedHistory/chatHistory 内的 SYSTEM turn。
+            // 两路都处理：显式 systemPrompt 字段 + preparedHistory/chatHistory 内的 SYSTEM turn。
+            // 实测真实到达模型的是后者，但前者在某些调用路径（如 ConversationService）会带值。
             val sys = systemPrompt
             if (sys != null) {
-                val r = PurgePromptRewriter.rewriteFinalize(sys, patchState, _promptText.value)
+                val r = PurgePromptRewriter.rewriteFinalize(sys, patchState, _promptText.value, squarePersona)
                 if (r != sys) {
                     systemPrompt = r
                     mutated = true
@@ -429,7 +447,12 @@ object PurgeEngine {
          */
         private fun rewriteSystemTurn(turn: PromptTurn): PromptTurn {
             PurgePromptRewriter.beginTrace()
-            val r = PurgePromptRewriter.rewriteFinalize(turn.content, patchState, _promptText.value)
+            val r = PurgePromptRewriter.rewriteFinalize(
+                    turn.content,
+                    patchState,
+                    _promptText.value,
+                    com.ai.assistance.operit.core.zfx.ZfxEngine.activePersona()
+            )
             val hits = PurgePromptRewriter.takeHits()
             PurgeTrace.record("finalize_system_turn", turn.content, r, hits)
             return if (r != turn.content) turn.withContent(r) else turn
