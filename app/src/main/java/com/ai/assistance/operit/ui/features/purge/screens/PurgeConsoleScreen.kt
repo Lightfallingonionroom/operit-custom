@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.core.purge.PatchStatus
 import com.ai.assistance.operit.core.purge.PurgeEngine
+import com.ai.assistance.operit.core.purge.PurgeTrace
 import com.ai.assistance.operit.core.purge.PurgeLayer
 import com.ai.assistance.operit.core.purge.PurgePatchCatalog
 
@@ -440,22 +441,41 @@ private fun StatusTab() {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("实际生效证据", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
-                    if (applyCount == 0) {
+                    val traces = remember(refreshTick, applyCount) { PurgeTrace.snapshot() }
+                    if (traces.isEmpty()) {
                         Text(
-                                "还没有发过请求。总开关打开后，发一条消息，" +
-                                        "这里会显示提示词被改写的真实记录。",
+                                "还没有捕获到改写记录。总开关打开后，发一条消息，" +
+                                        "这里会显示最终请求里 system prompt 的真实变化。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        Text("累计改写：$applyCount 次")
+                        val injected = traces.firstOrNull { it.injectMarkers > 0 }
+                        Text("累计改写：$applyCount 次（留档 ${traces.size} 条）")
                         Text("最近一次：${formatTime(lastApplyAt)}")
-                        Text(
-                                if (delta != 0) "提示词长度变化：${if (delta > 0) "+" else ""}$delta 字符"
-                                else "提示词长度变化：0（注入段已在历史里，未重复写入）"
-                        )
-                        if (hits.isNotEmpty()) {
-                            Text("命中补丁：${hits.joinToString(", ") { "#$it" }}")
+                        Spacer(modifier = Modifier.height(6.dp))
+                        if (injected != null) {
+                            Text(
+                                    "注入已进入最终请求：是（${injected.injectMarkers} 个标记，阶段 ${injected.stage}）",
+                                    style = MaterialTheme.typography.bodySmall
+                            )
+                        } else {
+                            Text(
+                                    "注入已进入最终请求：否 —— 说明补丁文本没写进 system prompt",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        traces.take(5).forEach { rec ->
+                            Text(
+                                    "[${rec.stage}] ${rec.inputLength} → ${rec.outputLength} " +
+                                            "(${if (rec.outputLength - rec.inputLength >= 0) "+" else ""}${rec.outputLength - rec.inputLength})" +
+                                            if (rec.hitIds.isEmpty()) " 无命中"
+                                            else " 命中 " + rec.hitIds.joinToString(",") { "#$it" },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }

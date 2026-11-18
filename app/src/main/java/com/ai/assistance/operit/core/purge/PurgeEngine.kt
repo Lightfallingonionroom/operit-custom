@@ -148,6 +148,22 @@ object PurgeEngine {
         }
     }
 
+    /**
+     * 只摘掉 Purge 自己的三个 hook。
+     *
+     * 原来调用 [PromptHookRegistry.clearBuiltinHooks]，那会把 ZFX 的 persona 槽位
+     * 一起清掉——表现为「关掉 Purge 之后 ZFX 也失效」。注册表本来就有按 id 精确
+     * 注销的方法，这里改用它们。
+     */
+    private fun unregisterHooks() {
+        synchronized(this) {
+            PromptHookRegistry.unregisterBuiltinSystemPromptHook(HOOK_SYSTEM)
+            PromptHookRegistry.unregisterBuiltinToolPromptHook(HOOK_TOOL)
+            PromptHookRegistry.unregisterBuiltinPromptFinalizeHook(HOOK_FINAL)
+            hooksRegistered = false
+        }
+    }
+
     // ---------- 总开关 ----------
 
     fun setEnabled(value: Boolean) {
@@ -216,8 +232,8 @@ object PurgeEngine {
     fun shutdown() {
         if (!initialized) return
         _enabled.value = false
-        PromptHookRegistry.clearBuiltinHooks()
-        hooksRegistered = false
+        // 只摘自己的三个 hook，不碰 ZFX 的 persona 槽位
+        unregisterHooks()
         AppLogger.i(TAG, "shutdown")
     }
 
@@ -254,11 +270,14 @@ object PurgeEngine {
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
             val current = context.systemPrompt ?: return null
+            PurgePromptRewriter.beginTrace()
             val rewritten = PurgePromptRewriter.rewriteSystemPrompt(
                     prompt = current,
                     patchState = patchState,
                     promptText = _promptText.value
             )
+            val hits = PurgePromptRewriter.takeHits()
+            PurgeTrace.record(context.stage.ifBlank { "system_compose" }, current, rewritten, hits)
             if (rewritten == current) return null
             return PromptHookMutation(systemPrompt = rewritten)
         }
@@ -274,7 +293,10 @@ object PurgeEngine {
         override fun onEvent(context: PromptHookContext): PromptHookMutation? {
             if (!_enabled.value) return null
             val current = context.toolPrompt ?: return null
+            PurgePromptRewriter.beginTrace()
             val rewritten = PurgePromptRewriter.rewriteToolPrompt(current, patchState)
+            val hits = PurgePromptRewriter.takeHits()
+            PurgeTrace.record("tool_prompt", current, rewritten, hits)
             if (rewritten == current) return null
             return PromptHookMutation(toolPrompt = rewritten)
         }
@@ -342,7 +364,9 @@ object PurgeEngine {
             // 记录真实生效证据：面板据此显示「已应用」而不是只显示开关状态
             _applyCount.value = _applyCount.value + 1
             _lastApplyAt.value = System.currentTimeMillis()
-            _lastHitIds.value = patchState.filter { it.value }.keys.sorted()
+            // 注意：这里记的是「真实产生文本变化的补丁」，不是「所有已勾选的补丁」。
+            // 原来记的是后者，导致面板显示「命中」但实际一个都没生效。
+            _lastHitIds.value = PurgeTrace.snapshot().firstOrNull()?.hitIds ?: emptyList()
             val delta = (systemPrompt?.length ?: 0) - (context.systemPrompt?.length ?: 0)
             if (delta != 0) _lastDelta.value = delta
             AppLogger.i(
@@ -365,7 +389,11 @@ object PurgeEngine {
             var changed = false
             val out = turns.map { turn ->
                 if (turn.kind == PromptTurnKind.SYSTEM) {
+                    PurgePromptRewriter.beginTrace()
                     val r = PurgePromptRewriter.rewriteFinalize(turn.content, patchState)
+                    val hits = PurgePromptRewriter.takeHits()
+                    // 这是「最终请求里的 system prompt」唯一可观测点，必须留档
+                    PurgeTrace.record("finalize_system_turn", turn.content, r, hits)
                     if (r != turn.content) {
                         changed = true
                         turn.withContent(r)

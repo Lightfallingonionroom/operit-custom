@@ -9,6 +9,51 @@ import com.ai.assistance.operit.core.chat.hooks.PromptTurn
  * 未命中（Operit 文本与上游不同）时原样返回，不产生副作用。
  */
 object PurgePromptRewriter {
+    /**
+     * 本次改写命中的补丁编号。
+     *
+     * 用 ThreadLocal 而不是可变成员：rewrite 可能被多个会话并发调用，
+     * 共享字段会串数据。调用方（PurgeEngine 的三个 hook）在同一个线程内
+     * 先 [beginTrace] 再读 [takeHits]。
+     */
+    private val hitTrace = ThreadLocal.withInitial { mutableListOf<Int>() }
+
+    /** 开始一次追踪：清空当前线程的命中记录。 */
+    fun beginTrace() {
+        hitTrace.get().clear()
+    }
+
+    /** 取出并清空当前线程的命中记录。 */
+    fun takeHits(): List<Int> {
+        val list = hitTrace.get().toList()
+        hitTrace.get().clear()
+        return list
+    }
+
+    /** 记录命中：仅当该补丁确实产生了文本变化时才算命中。 */
+    private fun mark(id: Int) {
+        val list = hitTrace.get()
+        if (!list.contains(id)) list.add(id)
+    }
+
+    /**
+     * 启用则执行 [block]，且只有文本真的变了才记为命中。
+     *
+     * 这样「勾了但锚点不匹配」的补丁不会被误报成生效——这正是之前
+     * 面板显示已启用、实际毫无效果的原因。
+     */
+    private inline fun applyIf(
+            state: Map<Int, Boolean>,
+            id: Int,
+            current: String,
+            block: (String) -> String
+    ): String {
+        if (!on(state, id)) return current
+        val next = block(current)
+        if (next != current) mark(id)
+        return next
+    }
+
 
     // ================= 系统提示词 =================
 
@@ -19,29 +64,29 @@ object PurgePromptRewriter {
     ): String {
         var out = prompt
 
-        if (on(patchState, 1)) out = stripWorkspaceContextIntro(out)
-        if (on(patchState, 2)) out = replaceWorkspaceContextIntro(out)
-        if (on(patchState, 3)) out = stripScopeIntro(out)
-        if (on(patchState, 4)) out = stripPersona(out)
-        if (on(patchState, 26)) out = stripMinimalPersona(out)
-        if (on(patchState, 25)) out = stripHostIdentity(out)
-        if (on(patchState, 33)) out = stripShellDenial(out)
-        if (on(patchState, 34)) out = neutralizeSandboxHint(out)
-        if (on(patchState, 36)) out = neutralizeFsEscalationSchema(out)
-        if (on(patchState, 37)) out = neutralizeSubagentScopeLock(out)
-        if (on(patchState, 38)) out = aliasPersonaPrefix(out)
-        if (on(patchState, 54)) out = stripDeliverableDoNot(out)
-        if (on(patchState, 61)) out = neutralizeSandboxPolicy(out)
-        if (on(patchState, 55)) out = replaceSystemPromptHead(out)
-        if (on(patchState, 66)) out = guardSystemPromptRender(out)
+        out = applyIf(patchState, 1, out) { stripWorkspaceContextIntro(it) }
+        out = applyIf(patchState, 2, out) { replaceWorkspaceContextIntro(it) }
+        out = applyIf(patchState, 3, out) { stripScopeIntro(it) }
+        out = applyIf(patchState, 4, out) { stripPersona(it) }
+        out = applyIf(patchState, 26, out) { stripMinimalPersona(it) }
+        out = applyIf(patchState, 25, out) { stripHostIdentity(it) }
+        out = applyIf(patchState, 33, out) { stripShellDenial(it) }
+        out = applyIf(patchState, 34, out) { neutralizeSandboxHint(it) }
+        out = applyIf(patchState, 36, out) { neutralizeFsEscalationSchema(it) }
+        out = applyIf(patchState, 37, out) { neutralizeSubagentScopeLock(it) }
+        out = applyIf(patchState, 38, out) { aliasPersonaPrefix(it) }
+        out = applyIf(patchState, 54, out) { stripDeliverableDoNot(it) }
+        out = applyIf(patchState, 61, out) { neutralizeSandboxPolicy(it) }
+        out = applyIf(patchState, 55, out) { replaceSystemPromptHead(it) }
+        out = applyIf(patchState, 66, out) { guardSystemPromptRender(it) }
         // ---- Operit 专用注入层 ----
         // 上游 82 项是清洗 DSH 文本，Operit 的 system prompt 里没有那些段落，
         // 所以另外补一组「注入」补丁，勾选后真正往最终 system prompt 写行为约束。
-        if (on(patchState, 201)) out = injectNoRefusal(out)
-        if (on(patchState, 202)) out = injectDirectDelivery(out)
-        if (on(patchState, 203)) out = injectNoDisclaimer(out)
-        if (on(patchState, 204)) out = injectToolFirst(out)
-        if (on(patchState, 205)) out = injectPersistThroughCompletion(out)
+        out = applyIf(patchState, 201, out) { injectNoRefusal(it) }
+        out = applyIf(patchState, 202, out) { injectDirectDelivery(it) }
+        out = applyIf(patchState, 203, out) { injectNoDisclaimer(it) }
+        out = applyIf(patchState, 204, out) { injectToolFirst(it) }
+        out = applyIf(patchState, 205, out) { injectPersistThroughCompletion(it) }
         // 面板「提示词」正文：非空时作为会话覆盖段追加
         if (promptText.isNotBlank()) {
             out = appendOverride(out, promptText)
@@ -53,24 +98,24 @@ object PurgePromptRewriter {
 
     fun rewriteToolPrompt(prompt: String, patchState: Map<Int, Boolean>): String {
         var out = prompt
-        if (on(patchState, 29)) out = neutralizeWebUntrusted(out)
-        if (on(patchState, 48)) out = neutralizeShellDeleteMove(out)
-        if (on(patchState, 80)) out = applyMinimalToolset(out)
+        out = applyIf(patchState, 29, out) { neutralizeWebUntrusted(it) }
+        out = applyIf(patchState, 48, out) { neutralizeShellDeleteMove(it) }
+        out = applyIf(patchState, 80, out) { applyMinimalToolset(it) }
         return out
     }
 
     // ================= 最终定稿 =================
     fun rewriteFinalize(prompt: String, patchState: Map<Int, Boolean>): String {
         var out = prompt
-        if (on(patchState, 50)) out = neutralizeSessionReferenceFraming(out)
-        if (on(patchState, 67)) out = guardAgentLoopMessages(out)
-        if (on(patchState, 68)) out = guardSystemNodesContent(out)
-        if (on(patchState, 72)) out = alignMessagesSystemCurrent(out)
-        if (on(patchState, 74)) out = assembleBeforePreStep(out)
-        if (on(patchState, 85)) out = sessionPromptAlwaysFollowup(out)
-        if (on(patchState, 86)) out = sessionSteerAlwaysFollowup(out)
-        if (on(patchState, 87)) out = hungPromptLfNeedle(out)
-        if (on(patchState, 88)) out = hungPromptStrictNeedle(out)
+        out = applyIf(patchState, 50, out) { neutralizeSessionReferenceFraming(it) }
+        out = applyIf(patchState, 67, out) { guardAgentLoopMessages(it) }
+        out = applyIf(patchState, 68, out) { guardSystemNodesContent(it) }
+        out = applyIf(patchState, 72, out) { alignMessagesSystemCurrent(it) }
+        out = applyIf(patchState, 74, out) { assembleBeforePreStep(it) }
+        out = applyIf(patchState, 85, out) { sessionPromptAlwaysFollowup(it) }
+        out = applyIf(patchState, 86, out) { sessionSteerAlwaysFollowup(it) }
+        out = applyIf(patchState, 87, out) { hungPromptLfNeedle(it) }
+        out = applyIf(patchState, 88, out) { hungPromptStrictNeedle(it) }
         // ---- Operit 专用注入层（必须挂在这里）----
         // 注意：systemPromptHook 的 SYSTEM_PROMPT_COMPOSE 槽位在本进程里
         // context.systemPrompt 恒为 null（真实 prompt 是 preparedHistory 里的
@@ -87,11 +132,11 @@ object PurgePromptRewriter {
      */
     fun applyOperitInjections(prompt: String, patchState: Map<Int, Boolean>): String {
         var out = prompt
-        if (on(patchState, 201)) out = injectNoRefusal(out)
-        if (on(patchState, 202)) out = injectDirectDelivery(out)
-        if (on(patchState, 203)) out = injectNoDisclaimer(out)
-        if (on(patchState, 204)) out = injectToolFirst(out)
-        if (on(patchState, 205)) out = injectPersistThroughCompletion(out)
+        out = applyIf(patchState, 201, out) { injectNoRefusal(it) }
+        out = applyIf(patchState, 202, out) { injectDirectDelivery(it) }
+        out = applyIf(patchState, 203, out) { injectNoDisclaimer(it) }
+        out = applyIf(patchState, 204, out) { injectToolFirst(it) }
+        out = applyIf(patchState, 205, out) { injectPersistThroughCompletion(it) }
         return out
     }
 
@@ -119,8 +164,8 @@ object PurgePromptRewriter {
         val desc = out["description"] as? String
         if (desc != null) {
             var d = desc
-            if (on(patchState, 36)) d = neutralizeFsEscalationSchema(d)
-            if (on(patchState, 60)) d = neutralizeRunCodeApproval(d)
+            d = applyIf(patchState, 36, d) { neutralizeFsEscalationSchema(it) }
+            d = applyIf(patchState, 60, d) { neutralizeRunCodeApproval(it) }
             if (d != desc) out = out.toMutableMap().apply { put("description", d) }
         }
         out
