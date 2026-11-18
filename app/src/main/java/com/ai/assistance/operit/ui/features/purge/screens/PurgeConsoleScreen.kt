@@ -180,10 +180,12 @@ private fun PatchTab(refreshTick: Int, onRefresh: () -> Unit) {
                 Button(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            PurgeEngine.enableAll()
+                            // 一键满血：开全部 LIVE 补丁 + 开总开关 + 写入整段强化准则。
+                            // 分散的短注入会被模型在思考阶段忽略，整段定位说明更稳。
+                            PurgeEngine.enableFullPower()
                             onRefresh()
                         }
-                ) { Text("一键全开") }
+                ) { Text("一键满血") }
                 OutlinedButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
