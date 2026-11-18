@@ -5,6 +5,8 @@ import com.ai.assistance.showerclient.ShowerController as ClientShowerController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -234,7 +236,7 @@ object ShowerController {
     var appContext: android.content.Context? = null
 
     /** 每个 agentId 一把建屏锁：并发动作同时到达时只建一次屏，其余等待复用。 */
-    private val buildLocks = ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val buildLocks = ConcurrentHashMap<String, Mutex>()
 
     /** 已在预热中的任务，避免重复发起 */
     @Volatile private var prewarming = false

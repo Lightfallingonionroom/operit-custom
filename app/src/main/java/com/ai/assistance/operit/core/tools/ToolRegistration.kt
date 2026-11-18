@@ -92,7 +92,21 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
         val agentId = if (raw != null && raw.isNotBlank()) raw else defaultBgAgentId
         // 顺手预热：建屏耗时藏在后台协程里，不占这次动作的时间。
         // Mika 的 LazyDisplay 是「第一次操作才建」，我们是「第一次操作时已经建好」。
-        if (canUseShowerBackground() && ShowerController.getDisplayId(agentId) == null) {
+        // 注意：canUseShowerBackground 定义在本函数之后（同一 registerAllTools 作用域内的
+        // 局部函数不能前向引用），所以这里直接做权限判定。
+        val canPrewarm = try {
+            val level = AndroidPermissionPreferences(context).getPreferredPermissionLevel()
+            when (level) {
+                AndroidPermissionLevel.DEBUGGER ->
+                    ShizukuAuthorizer.isShizukuServiceRunning() &&
+                            ShizukuAuthorizer.hasShizukuPermission()
+                AndroidPermissionLevel.ADMIN, AndroidPermissionLevel.ROOT -> true
+                else -> false
+            }
+        } catch (_: Throwable) {
+            false
+        }
+        if (canPrewarm && ShowerController.getDisplayId(agentId) == null) {
             try {
                 ShowerController.prewarm(agentId, context)
             } catch (_: Throwable) {
