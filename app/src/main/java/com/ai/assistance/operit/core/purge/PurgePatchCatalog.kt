@@ -6,16 +6,28 @@ package com.ai.assistance.operit.core.purge
  * 编号与名称原样保留上游（dsh-purge，原作者 YuJunZhiXue，MIT），
  * 编号 20/27/41/44/79/81 为上游跳号，此处同样跳过。
  *
+ * ## 收录标准（Sir 定的口径）
+ *
+ * 上游 82 项里大部分在**修 DSH 自己的毛病**（审批系统、沙箱围栏、preset 体系、
+ * plan mode、rewind 子行为）。Operit 没有这些对象，硬接过来不但没有正收益，
+ * 还可能造成损害：
+ *
+ * - 把「沙箱」改写成「环境」→ 模型丢失路径语义，按普通 Linux 路径乱试
+ * - 把「删除」改写成「移除」→ 描述与真实 `rm` 不符，误导操作
+ * - 把 system role 改成 `injected` → 造出模型不认识的字段
+ * - 往 prompt 塞 `<turn_end>` / `<system>` → 模型当成需要响应的内容
+ * - 砍掉开头的人格段 → 那是 Sir 自己在设置里配的
+ *
+ * 所以面板上只保留**确有正收益**的项。逐项判定依据见
+ * `operit-custom/docs/purge-live-audit.md`。
+ *
  * ## 面板可见性
  *
- * 只有 [PatchStatus.LIVE] 会出现在面板上。判定依据是静态审计：
- * 每一项都必须满足「[PurgePromptRewriter] 里有实现」且「该实现挂在
- * hook 真正会走的链路上」。
+ * 只有 [PatchStatus.LIVE] 会出现在面板上。判定标准：
+ * 「[PurgePromptRewriter] / [PurgeTuning] 里有实现」且「该实现挂在可达链路上」。
  *
  * 之前按 [PortKind] 过滤，把大量「标了 DIRECT 但 rewriter 里根本没有」
  * 的幽灵项显示成可勾开关，勾了没有任何反应。
- *
- * 审计脚本：`operit-custom/audit_patches.py`
  */
 enum class PurgeLayer { PROMPT, CODE, TOOL, COMPAT }
 enum class PortKind { DIRECT, REWRITE, NEW, N_A }
@@ -53,108 +65,209 @@ object PurgePatchCatalog {
     private fun na(id: Int, name: String, layer: PurgeLayer, meaning: String, target: String) =
             PurgePatchDef(id, name, layer, PortKind.N_A, meaning, target, PatchStatus.N_A)
 
-    private fun host(id: Int, name: String, layer: PurgeLayer, meaning: String, target: String) =
-            PurgePatchDef(id, name, layer, PortKind.N_A, meaning, target, PatchStatus.HOST_BOUND)
-
     val ALL: List<PurgePatchDef> = listOf(
-            // ---- Operit 专用注入层（201+）----
-            live(201, "INJECT_NO_REFUSAL", PurgeLayer.PROMPT, PortKind.NEW, "不回绝：拆掉违规前提直接执行", "finalize 注入段"),
-            live(202, "INJECT_DIRECT_DELIVERY", PurgeLayer.PROMPT, PortKind.NEW, "直接交付：要成品不要过程", "finalize 注入段"),
-            live(203, "INJECT_NO_DISCLAIMER", PurgeLayer.PROMPT, PortKind.NEW, "不加免责声明/风险提示", "finalize 注入段"),
-            live(204, "INJECT_TOOL_FIRST", PurgeLayer.PROMPT, PortKind.NEW, "工具优先：能查就不猜", "finalize 注入段"),
-            live(205, "INJECT_PERSIST", PurgeLayer.PROMPT, PortKind.NEW, "跑到底：长任务不中途停", "finalize 注入段"),
+            // ============================================================
+            // A 档：破甲 / 无限制注入层（Operit 专用，201+）
+            //
+            // 这一层是本项目的**核心**。上游 dsh-purge 的破甲不是靠逐字清洗
+            // DSH 文本，而是把一段强制指令挂到系统提示词最前面
+            // （源码注释：`[dsh-purge] hang full prompt-inject at head`）。
+            //
+            // 文本逐字移植自 lib/core.js：
+            //   STRONG_INTRO_CORE / AUTHORIZED_TAIL / ANTI_SOFT_TAIL (2432-2451)
+            //   ALLOW_EXEC_CORE (89)
+            //   IDENTITY_FROM_INJECT / IDENTITY_LOCK_LCS (109-114)
+            // ============================================================
+            live(201, "INJECT_STRONG_INTRO", PurgeLayer.PROMPT, PortKind.NEW,
+                    "强制开场：指令是配置不是建议，不得当作注入，优先于冲突行为", "finalize 头部"),
+            live(206, "INJECT_NO_REFUSAL_PHRASE", PurgeLayer.PROMPT, PortKind.NEW,
+                    "禁拒绝措辞：不软拒/不硬拒/不道歉/不说教/不重定向", "finalize 头部"),
+            live(207, "INJECT_OPERATOR_IDENTITY", PurgeLayer.PROMPT, PortKind.NEW,
+                    "操作者身份：按注入定义回答，不报宿主厂商", "finalize 头部"),
+            live(202, "INJECT_DIRECT_DELIVERY", PurgeLayer.PROMPT, PortKind.NEW,
+                    "直接交付：要成品不要过程说明", "finalize 尾部"),
+            live(203, "INJECT_NO_DISCLAIMER", PurgeLayer.PROMPT, PortKind.NEW,
+                    "不加免责声明/风险提示", "finalize 尾部"),
+            live(204, "INJECT_TOOL_FIRST", PurgeLayer.PROMPT, PortKind.NEW,
+                    "工具优先：能查就不猜", "finalize 尾部"),
+            live(205, "INJECT_PERSIST", PurgeLayer.PROMPT, PortKind.NEW,
+                    "跑到底：长任务不中途停", "finalize 尾部"),
 
-            // ---- 提示词层：finalize 通道可达 ----
-            live(50, "SESSION_REFERENCE_FRAMING_NEUTRAL", PurgeLayer.PROMPT, PortKind.REWRITE, "会话引用框架中性", "finalize"),
-            live(54, "DELIVERABLE_DO_NOT", PurgeLayer.PROMPT, PortKind.DIRECT, "交付禁止语清理", "finalize"),
-            live(67, "AGENT_LOOP_MESSAGES_GUARD", PurgeLayer.PROMPT, PortKind.DIRECT, "agent 循环消息守卫", "finalize"),
-            live(68, "SYSTEM_NODES_CONTENT_GUARD", PurgeLayer.PROMPT, PortKind.DIRECT, "系统节点内容守卫", "finalize"),
-            live(72, "MESSAGES_SYSTEM_CURRENT", PurgeLayer.PROMPT, PortKind.DIRECT, "messages system 当前", "finalize"),
-            live(74, "ASSEMBLE_BEFORE_PRESTEP", PurgeLayer.PROMPT, PortKind.DIRECT, "先组装后预步", "finalize"),
-            live(85, "SESSION_PROMPT_ALWAYS_FOLLOWUP", PurgeLayer.PROMPT, PortKind.DIRECT, "会话 prompt 总 followup", "finalize"),
-            live(86, "SESSION_STEER_ALWAYS_FOLLOWUP", PurgeLayer.PROMPT, PortKind.DIRECT, "会话 steer 总 followup", "finalize"),
-            live(87, "HUNG_PROMPT_LF_NEEDLE", PurgeLayer.PROMPT, PortKind.DIRECT, "卡死提示 LF 探针", "finalize"),
-            live(88, "HUNG_PROMPT_STRICT_NEEDLE", PurgeLayer.PROMPT, PortKind.DIRECT, "卡死提示严格探针", "finalize"),
+            // ============================================================
+            // A 档：宿主代码层（有真实调用点，经 PurgeTuning）
+            // ============================================================
+            live(19, "TOOL_RESULT_PRUNER_DISABLED", PurgeLayer.CODE, PortKind.DIRECT,
+                    "工具结果裁剪关闭：5KB→50KB，少丢上下文", "ToolExecutionLimits.maxTextResultLength"),
+            live(22, "READ_CAPS_RAISED", PurgeLayer.CODE, PortKind.DIRECT,
+                    "读取上限提高：32KB→320KB，少分页读", "ToolExecutionLimits.maxFileReadBytes"),
+            live(23, "SUBAGENT_MAXDEPTH_RAISED", PurgeLayer.CODE, PortKind.DIRECT,
+                    "子代理步数提高：20→100，长任务能跑完", "PhoneAgent.AgentConfig.maxSteps"),
 
-            // ---- 工具层可达 ----
-            live(29, "TOOL_WEB_UNTRUSTED_NEUTRAL", PurgeLayer.TOOL, PortKind.DIRECT, "web 工具不可信中", "rewriteToolPrompt"),
-            live(48, "TOOL_SHELL_DELETE_MOVE_NEUTRAL", PurgeLayer.TOOL, PortKind.DIRECT, "shell 删除移动中性", "rewriteToolPrompt"),
-            live(80, "MINIMAL_OFFICIAL_TOOLSET", PurgeLayer.TOOL, PortKind.REWRITE, "极简官方工具集", "rewriteToolPrompt"),
+            // ============================================================
+            // N_A：空转 —— 锚点在 Operit 里 0 命中，跑完一字未变
+            // ============================================================
+            na(1, "WORKSPACE_CONTEXT_INTRO", PurgeLayer.PROMPT,
+                    "空转：Operit 工作区指南是 Sir 需要的信息，删了有害", "工作区指南段"),
+            na(2, "REPLACEMENT_WORKSPACE_CONTEXT_INTRO", PurgeLayer.PROMPT,
+                    "空转：同上，替换会丢失路径说明", "工作区指南段"),
+            na(3, "SCOPE_INTRO", PurgeLayer.PROMPT,
+                    "空转：Operit 无「范围介绍」段", "范围段"),
+            na(4, "SYSTEM_PROMPT_PERSONA", PurgeLayer.PROMPT,
+                    "空转：上游动作是 personaPrefix:\"\"，Operit 的人格是 Sir 在设置里配的，抹掉有害", "自我介绍段"),
+            na(25, "HARNESS_IDENTITY_STRIP", PurgeLayer.PROMPT,
+                    "空转：Operit 提示词无 harness 字样（由 207 注入层覆盖）", "身份句"),
+            na(26, "MINIMAL_PERSONA_PURGE", PurgeLayer.PROMPT,
+                    "空转：同上，人格是用户配置", "人格段"),
+            na(29, "TOOL_WEB_UNTRUSTED_NEUTRAL", PurgeLayer.TOOL,
+                    "空转且有害：untrusted→external 会弱化风险提示", "web 工具描述"),
+            na(33, "TOOL_SHELL_DENIAL_PROMPT", PurgeLayer.PROMPT,
+                    "空转：Operit 无「需要授权/无法访问」句（已 grep 验证 0 命中）", "工具说明"),
+            na(34, "SANDBOX_HINT_NEUTRAL", PurgeLayer.PROMPT,
+                    "有害：把「沙箱」改成「环境」会丢失路径语义，模型按普通 Linux 路径乱试", "工作区指南"),
+            na(36, "TOOL_FS_ESCALATION_SCHEMA", PurgeLayer.PROMPT,
+                    "空转：「权限升级」/escalation 在 Operit 里 0 命中", "tool schema"),
+            na(37, "SUBAGENT_SCOPE_LOCK_NEUTRAL", PurgeLayer.PROMPT,
+                    "空转：Operit 无「子代理只能/仅限」句", "子代理段"),
+            na(38, "PERSONA_TEXT_PREFIX_ALIAS", PurgeLayer.PROMPT,
+                    "有害：把「你是」改成「角色：」是改 Sir 自己配的人格", "自我介绍段"),
+            na(48, "TOOL_SHELL_DELETE_MOVE_NEUTRAL", PurgeLayer.TOOL,
+                    "有害：delete→remove 让描述与真实 rm/mv 不符，误导操作", "shell 工具描述"),
+            na(50, "SESSION_REFERENCE_FRAMING_NEUTRAL", PurgeLayer.PROMPT,
+                    "空转：`[session]` 在 Operit 里不存在", "会话引用"),
+            na(54, "DELIVERABLE_DO_NOT", PurgeLayer.PROMPT,
+                    "空转：`DELIVERABLE_DO_NOT` 字面量不存在", "交付段"),
+            na(55, "SYSTEM_PROMPT_REPLACE_HEAD", PurgeLayer.PROMPT,
+                    "空转：替换开头会覆盖 Sir 配的人格（由 201 注入层代替）", "开头段"),
+            na(60, "OFFICIAL_RUN_CODE_APPROVAL_NEUTRAL", PurgeLayer.TOOL,
+                    "空转：`审批` 在 Operit 里 0 命中（无审批系统）", "run_code 描述"),
+            na(61, "OFFICIAL_SANDBOX_POLICY_NEUTRAL", PurgeLayer.PROMPT,
+                    "空转：「沙箱策略」/sandbox policy 0 命中", "策略段"),
+            na(66, "SYSTEM_PROMPT_RENDER_GUARD", PurgeLayer.PROMPT,
+                    "有害：删空 {{XXX}} 会造成「你的工作区是 。」这种残句", "模板占位符"),
+            na(67, "AGENT_LOOP_MESSAGES_GUARD", PurgeLayer.PROMPT,
+                    "空转：`<tool>` 虽有 2 处，删标签会破坏工具调用示例", "循环消息"),
+            na(68, "SYSTEM_NODES_CONTENT_GUARD", PurgeLayer.PROMPT,
+                    "空转：`<system_nodes>` 不存在", "系统节点"),
+            na(72, "MESSAGES_SYSTEM_CURRENT", PurgeLayer.PROMPT,
+                    "空转且危险：role: system→injected 会造出模型不认识的字段", "messages 组装"),
+            na(74, "ASSEMBLE_BEFORE_PRESTEP", PurgeLayer.PROMPT,
+                    "空转：只做 CRLF→LF，Android 上本来就是 LF", "预步组装"),
+            na(80, "MINIMAL_OFFICIAL_TOOLSET", PurgeLayer.TOOL,
+                    "空转且有害：按 `- ` 前缀过滤会误删正常列表项", "工具集"),
+            na(85, "SESSION_PROMPT_ALWAYS_FOLLOWUP", PurgeLayer.PROMPT,
+                    "有害：往 prompt 塞 `<turn_end>`，模型会当成需要响应的内容", "会话 prompt"),
+            na(86, "SESSION_STEER_ALWAYS_FOLLOWUP", PurgeLayer.PROMPT,
+                    "空转：`steer` 在 Operit 里 0 命中", "steer 段"),
+            na(87, "HUNG_PROMPT_LF_NEEDLE", PurgeLayer.PROMPT,
+                    "空转：只做 CRLF→LF，Android 上无 CRLF", "挂载探针"),
+            na(88, "HUNG_PROMPT_STRICT_NEEDLE", PurgeLayer.PROMPT,
+                    "有害：给整段 prompt 套 `<system>` 标签是双重包装", "挂载探针"),
 
-            // ---- 宿主框架绑定：需改 Operit 权限/审批/会话框架 ----
-            na(5, "APPROVAL_NEVER_SENTENCE", PurgeLayer.PROMPT, "去审批 never 语句", "Operit 审批 UI"),
-            na(6, "SANDBOX_DENY_FILE_WRITE", PurgeLayer.CODE, "去沙箱拒绝写文件", "Operit 权限策略"),
-            na(7, "SANDBOX_MODE_DEFAULT", PurgeLayer.CODE, "沙箱模式默认", "Operit 权限策略"),
-            na(8, "APPROVAL_POLICY_DEFAULT", PurgeLayer.CODE, "审批策略默认", "Operit 审批策略"),
-            na(9, "APPROVAL_AUTO_GRANT", PurgeLayer.CODE, "审批自动放行", "Operit 审批策略"),
-            na(10, "APPROVAL_CONFIG_DEFAULT_NEVER", PurgeLayer.CODE, "审批配置默认 never", "Operit 审批配置"),
-            na(11, "APPROVAL_NEVER_SENTENCE_BYPASS", PurgeLayer.PROMPT, "绕过该句", "Operit 审批 UI"),
-            na(12, "APPROVAL_ASK_SENTENCE_BYPASS", PurgeLayer.PROMPT, "绕过 ask 语句", "Operit 审批 UI"),
-            na(13, "ESCALATION_WIDENING_EXEMPT", PurgeLayer.CODE, "升级扩权豁免", "Operit 权限策略"),
-            na(14, "ESCALATION_GRANT_UNCONDITIONAL", PurgeLayer.CODE, "升级无条件授权", "Operit 权限策略"),
-            na(15, "SANDBOX_CONFINE_PASSTHROUGH", PurgeLayer.CODE, "沙箱 confine 直通", "Operit 权限策略"),
-            na(16, "FS_FENCE_DISABLED", PurgeLayer.CODE, "fs 围栏关闭", "Workspace 权限层"),
-            na(17, "FS_OBSERVATION_INTENT_FREE", PurgeLayer.CODE, "fs 观察免意图", "Workspace 权限层"),
-            live(18, "REPEAT_TOOL_REMINDER_DISABLED", PurgeLayer.CODE, PortKind.DIRECT, "重复工具提醒关闭", "AI 循环控制"),
-            live(19, "TOOL_RESULT_PRUNER_DISABLED", PurgeLayer.CODE, PortKind.DIRECT, "工具结果裁剪关闭", "结果后处理"),
-            live(21, "BASH_TIMEOUT_RESTORE", PurgeLayer.CODE, PortKind.DIRECT, "bash 超时恢复 60s", "TerminalManager"),
-            live(22, "READ_CAPS_RAISED", PurgeLayer.CODE, PortKind.DIRECT, "读取上限提高", "工具限制"),
-            live(23, "SUBAGENT_MAXDEPTH_RAISED", PurgeLayer.CODE, PortKind.DIRECT, "子代理深度提高", "子代理调度"),
-            na(24, "PRESET_FETCH_ENABLED", PurgeLayer.CODE, "preset 抓取启用", "配置层"),
-            na(35, "ESCALATION_NEVER_REJECT", PurgeLayer.CODE, "升级不拒绝", "Operit 权限策略"),
-            na(39, "SESSION_V0_PLUGIN_SUMMARY_ALIAS", PurgeLayer.CODE, "v0 插件摘要别名", "会话摘要"),
-            live(51, "FRESH_SESSION_FULL_ACCESS", PurgeLayer.CODE, PortKind.DIRECT, "新会话全权限", "Operit 权限策略"),
-            na(52, "SESSION_LOG_UPLOAD_DEFAULT_OFF", PurgeLayer.CODE, "会话日志上传默认关", "日志开关"),
-            na(56, "REWIND_HIDE_CUT_ONLY", PurgeLayer.CODE, "rewind 只切隐藏", "rewind"),
-            na(58, "REWIND_SKIP_DERIVE", PurgeLayer.CODE, "rewind 跳推导", "rewind"),
-            live(60, "OFFICIAL_RUN_CODE_APPROVAL_NEUTRAL", PurgeLayer.TOOL, PortKind.DIRECT, "run_code 审批中性", "Operit 权限策略"),
-            live(62, "OFFICIAL_TOOL_ASK_FAILOPEN", PurgeLayer.CODE, PortKind.DIRECT, "工具 ask 失败打开", "工具失败处理"),
-            na(63, "OFFICIAL_PLAN_MODE_NEUTRAL", PurgeLayer.PROMPT, "计划模式中性", "plan mode"),
-            live(69, "MODEL_STREAM_RELEASE", PurgeLayer.CODE, PortKind.DIRECT, "模型流释放", "流式处理"),
-            na(70, "PRESET_SHELL_NETWORK", PurgeLayer.PROMPT, "preset shell 网络", "配置层"),
-            na(73, "PRESET_BASH_MIRROR_LINE", PurgeLayer.PROMPT, "preset bash 镜像行", "配置层"),
-            na(75, "REWIND_RESET_TODOS", PurgeLayer.CODE, "rewind 重置 todos", "rewind"),
-            na(76, "PRESET_UNRESTRICTED_IDENTITY_STRIP", PurgeLayer.PROMPT, "无限制身份剥离", "配置层"),
-            na(77, "REWIND_DROP_SENT_ON_APPEND", PurgeLayer.CODE, "rewind 追加时丢已发", "rewind"),
-            na(78, "OVERLAY_RESTORE_FROM_BAK", PurgeLayer.CODE, "overlay 从备份恢复", "备份恢复"),
-
-            // ---- SystemPromptCompose 槽位未通（context.systemPrompt 恒 null）----
-            live(1, "WORKSPACE_CONTEXT_INTRO", PurgeLayer.PROMPT, PortKind.DIRECT, "去工作区上下文介绍", "finalize/system"),
-            live(2, "REPLACEMENT_WORKSPACE_CONTEXT_INTRO", PurgeLayer.PROMPT, PortKind.REWRITE, "替换该段", "finalize/system"),
-            live(3, "SCOPE_INTRO", PurgeLayer.PROMPT, PortKind.DIRECT, "去范围介绍", "finalize/system"),
-            live(4, "SYSTEM_PROMPT_PERSONA", PurgeLayer.PROMPT, PortKind.DIRECT, "去 persona 注入", "finalize/system"),
-            live(25, "HARNESS_IDENTITY_STRIP", PurgeLayer.PROMPT, PortKind.REWRITE, "去身份声明句", "finalize/system"),
-            live(26, "MINIMAL_PERSONA_PURGE", PurgeLayer.PROMPT, PortKind.REWRITE, "极简 persona", "finalize/system"),
-            live(33, "TOOL_SHELL_DENIAL_PROMPT", PurgeLayer.PROMPT, PortKind.DIRECT, "去拒绝话术", "finalize/system"),
-            live(34, "SANDBOX_HINT_NEUTRAL", PurgeLayer.PROMPT, PortKind.DIRECT, "沙箱提示中性", "finalize/system"),
-            live(36, "TOOL_FS_ESCALATION_SCHEMA", PurgeLayer.PROMPT, PortKind.DIRECT, "权限升级中性", "tool schema"),
-            live(37, "SUBAGENT_SCOPE_LOCK_NEUTRAL", PurgeLayer.PROMPT, PortKind.DIRECT, "子代理范围中性", "finalize/system"),
-            live(38, "PERSONA_TEXT_PREFIX_ALIAS", PurgeLayer.CODE, PortKind.DIRECT, "persona 前缀别名", "finalize/system"),
-            live(55, "SYSTEM_PROMPT_REPLACE_HEAD", PurgeLayer.CODE, PortKind.DIRECT, "替换提示词开头", "finalize/system"),
-            live(61, "OFFICIAL_SANDBOX_POLICY_NEUTRAL", PurgeLayer.PROMPT, PortKind.DIRECT, "沙箱策略中性", "finalize/system"),
-            live(66, "SYSTEM_PROMPT_RENDER_GUARD", PurgeLayer.CODE, PortKind.DIRECT, "渲染守卫", "finalize/system"),
-
-            // ---- dsh 专有对象：Operit 没有这些东西 ----
-            na(28, "LIANGSHEN_PHASE1_KEEP_INJECT", PurgeLayer.PROMPT, "保留梁神注入", "dsh 第三方插件"),
-            na(30, "HOOKS_CLAUDE_DENY_ALLOW", PurgeLayer.TOOL, "claude hook 放行", "dsh 专有 hook"),
-            na(31, "HOOKS_CODEX_DENY_ALLOW", PurgeLayer.TOOL, "codex hook 放行", "dsh 专有 hook"),
-            na(32, "WEB_SURFACE_IDENTITY_NEUTRAL", PurgeLayer.PROMPT, "web 面身份中性", "dsh web"),
-            na(40, "COMPLETE_PROMPT_KEEP_INJECT", PurgeLayer.COMPAT, "完整提示词保留注入", "dsh 0.1.5"),
-            na(42, "SETTINGS_LEGACY_API", PurgeLayer.CODE, "设置旧 API", "dsh 设置页"),
-            na(43, "WEB_PRESET_IDENTITY_STRIP", PurgeLayer.PROMPT, "web preset 身份剥离", "dsh web"),
-            na(45, "OFFICIAL_DESKTOP_UPDATE_HANDOFF", PurgeLayer.CODE, "桌面更新交接", "dsh 桌面"),
-            na(46, "OFFICIAL_DESKTOP_UPDATE_ASCII", PurgeLayer.CODE, "桌面更新 ASCII", "dsh 桌面"),
-            na(47, "ANTHROPIC_OAUTH_NO_CLAUDE_IDENTITY", PurgeLayer.COMPAT, "去 claude 身份", "dsh 0.2.0"),
-            na(49, "ANTHROPIC_OAUTH_CLI_NEUTRAL", PurgeLayer.COMPAT, "oauth cli 中性", "dsh 0.2.0"),
-            na(53, "WEB_SURFACE_PROHIBITION", PurgeLayer.PROMPT, "web 面禁止语", "dsh web"),
-            na(57, "DEEPSEEK_SYSTEM_ROLE", PurgeLayer.CODE, "deepseek system role", "dsh 专有"),
-            na(59, "OFFICIAL_AUTO_REVIEW_PASSTHROUGH", PurgeLayer.CODE, "自动审查直通", "dsh 官方审查"),
-            na(64, "HOOKS_STOP_STEER_NEUTRAL", PurgeLayer.TOOL, "stop steer hook 中性", "dsh 专有 hook"),
-            na(65, "HOOKS_PRESTEP_REJECT_NEUTRAL", PurgeLayer.TOOL, "prestep reject hook 中性", "dsh 专有 hook"),
-            na(71, "LIANGSHEN_IDENTITY_LINE", PurgeLayer.PROMPT, "梁神身份行", "dsh 第三方插件"),
-            na(82, "DESKTOP_SHELL_PROFILE_FALLBACK", PurgeLayer.CODE, "桌面 shell profile 回退", "dsh 桌面"),
-            na(83, "DESKTOP_HOST_CLOSE_NO_FATAL", PurgeLayer.CODE, "桌面 host 关闭不致命", "dsh 桌面"),
-            na(84, "DESKTOP_HOST_CLOSE_CODE0_NO_FAIL", PurgeLayer.CODE, "桌面 host 关闭 0 不失败", "dsh 桌面")
+            // ============================================================
+            // N_A：Operit 无对应架构（审批/沙箱/preset/plan/rewind）
+            // ============================================================
+            na(5, "APPROVAL_NEVER_SENTENCE", PurgeLayer.PROMPT,
+                    "Operit 无审批系统", "审批 UI"),
+            na(6, "SANDBOX_DENY_FILE_WRITE", PurgeLayer.CODE,
+                    "Operit 无沙箱写拒绝围栏", "权限策略"),
+            na(7, "SANDBOX_MODE_DEFAULT", PurgeLayer.CODE,
+                    "Operit 无 sandbox mode", "权限策略"),
+            na(8, "APPROVAL_POLICY_DEFAULT", PurgeLayer.CODE,
+                    "Operit 无审批策略", "审批策略"),
+            na(9, "APPROVAL_AUTO_GRANT", PurgeLayer.CODE,
+                    "Operit 无审批放行机制", "审批策略"),
+            na(10, "APPROVAL_CONFIG_DEFAULT_NEVER", PurgeLayer.CODE,
+                    "Operit 无审批配置", "审批配置"),
+            na(11, "APPROVAL_NEVER_SENTENCE_BYPASS", PurgeLayer.PROMPT,
+                    "Operit 无该句", "审批 UI"),
+            na(12, "APPROVAL_ASK_SENTENCE_BYPASS", PurgeLayer.PROMPT,
+                    "Operit 无 ask 语义", "审批 UI"),
+            na(13, "ESCALATION_WIDENING_EXEMPT", PurgeLayer.CODE,
+                    "Operit 无权限升级机制", "权限策略"),
+            na(14, "ESCALATION_GRANT_UNCONDITIONAL", PurgeLayer.CODE,
+                    "Operit 无权限升级机制", "权限策略"),
+            na(15, "SANDBOX_CONFINE_PASSTHROUGH", PurgeLayer.CODE,
+                    "Operit 无 confine 层", "权限策略"),
+            na(16, "FS_FENCE_DISABLED", PurgeLayer.CODE,
+                    "Operit 无 fs 围栏", "Workspace 权限层"),
+            na(17, "FS_OBSERVATION_INTENT_FREE", PurgeLayer.CODE,
+                    "Operit 无 observation intent", "Workspace 权限层"),
+            na(18, "REPEAT_TOOL_REMINDER_DISABLED", PurgeLayer.CODE,
+                    "空转：Operit 无「重复工具提醒」机制（已 grep 验证）", "AI 循环控制"),
+            na(21, "BASH_TIMEOUT_RESTORE", PurgeLayer.CODE,
+                    "纯迁移补丁：上游把自己改成的 600000 回滚到 60000；Operit 终端默认 30 分钟，从未被插件改过，照搬反而砍短等待", "bash timeoutMs"),
+            na(24, "PRESET_FETCH_ENABLED", PurgeLayer.CODE,
+                    "Operit 无 preset 体系", "配置层"),
+            na(28, "LIANGSHEN_PHASE1_KEEP_INJECT", PurgeLayer.PROMPT,
+                    "dsh 第三方插件专有", "liangshen"),
+            na(30, "HOOKS_CLAUDE_DENY_ALLOW", PurgeLayer.TOOL,
+                    "dsh 专有 hook", "claude hook"),
+            na(31, "HOOKS_CODEX_DENY_ALLOW", PurgeLayer.TOOL,
+                    "dsh 专有 hook", "codex hook"),
+            na(32, "WEB_SURFACE_IDENTITY_NEUTRAL", PurgeLayer.PROMPT,
+                    "dsh web 专有", "dsh web"),
+            na(35, "ESCALATION_NEVER_REJECT", PurgeLayer.CODE,
+                    "Operit 无权限升级机制", "权限策略"),
+            na(39, "SESSION_V0_PLUGIN_SUMMARY_ALIAS", PurgeLayer.CODE,
+                    "Operit 无 v0 插件摘要", "会话摘要"),
+            na(40, "COMPLETE_PROMPT_KEEP_INJECT", PurgeLayer.COMPAT,
+                    "dsh 0.1.5 兼容补丁", "dsh 0.1.5"),
+            na(42, "SETTINGS_LEGACY_API", PurgeLayer.CODE,
+                    "dsh 设置页专有", "dsh 设置"),
+            na(43, "WEB_PRESET_IDENTITY_STRIP", PurgeLayer.PROMPT,
+                    "Operit 无 preset 文件（由 207 注入层覆盖身份）", "preset yml"),
+            na(45, "OFFICIAL_DESKTOP_UPDATE_HANDOFF", PurgeLayer.CODE,
+                    "dsh 桌面专有", "dsh desktop"),
+            na(46, "OFFICIAL_DESKTOP_UPDATE_ASCII", PurgeLayer.CODE,
+                    "dsh 桌面专有", "dsh desktop"),
+            na(47, "ANTHROPIC_OAUTH_NO_CLAUDE_IDENTITY", PurgeLayer.COMPAT,
+                    "dsh 0.2.0 兼容补丁", "dsh oauth"),
+            na(49, "ANTHROPIC_OAUTH_CLI_NEUTRAL", PurgeLayer.COMPAT,
+                    "dsh 0.2.0 兼容补丁", "dsh oauth"),
+            na(51, "FRESH_SESSION_FULL_ACCESS", PurgeLayer.CODE,
+                    "空转：Operit 权限是 DataStore 持久化策略，不由此层控制", "权限默认档"),
+            na(52, "SESSION_LOG_UPLOAD_DEFAULT_OFF", PurgeLayer.CODE,
+                    "dsh 日志开关专有", "日志开关"),
+            na(53, "WEB_SURFACE_PROHIBITION", PurgeLayer.PROMPT,
+                    "dsh web 专有", "dsh web"),
+            na(56, "REWIND_HIDE_CUT_ONLY", PurgeLayer.CODE,
+                    "Operit rewind 是整体回档，无子行为", "rewind"),
+            na(57, "DEEPSEEK_SYSTEM_ROLE", PurgeLayer.CODE,
+                    "dsh provider 专有", "dsh 专有"),
+            na(58, "REWIND_SKIP_DERIVE", PurgeLayer.CODE,
+                    "Operit rewind 无推导步骤", "rewind"),
+            na(59, "OFFICIAL_AUTO_REVIEW_PASSTHROUGH", PurgeLayer.CODE,
+                    "dsh 自动审查专有", "dsh 审查"),
+            na(62, "OFFICIAL_TOOL_ASK_FAILOPEN", PurgeLayer.CODE,
+                    "空转：Operit 无 ask 语义（已 grep 验证）", "工具失败处理"),
+            na(63, "OFFICIAL_PLAN_MODE_NEUTRAL", PurgeLayer.PROMPT,
+                    "Operit 无 plan mode", "plan mode"),
+            na(64, "HOOKS_STOP_STEER_NEUTRAL", PurgeLayer.TOOL,
+                    "dsh 专有 hook", "dsh hook"),
+            na(65, "HOOKS_PRESTEP_REJECT_NEUTRAL", PurgeLayer.TOOL,
+                    "dsh 专有 hook", "dsh hook"),
+            na(69, "MODEL_STREAM_RELEASE", PurgeLayer.CODE,
+                    "空转：Operit 流式响应由 provider 自身管理", "流式处理"),
+            na(70, "PRESET_SHELL_NETWORK", PurgeLayer.PROMPT,
+                    "Operit 无 preset 体系", "配置层"),
+            na(71, "LIANGSHEN_IDENTITY_LINE", PurgeLayer.PROMPT,
+                    "dsh 第三方插件专有", "liangshen"),
+            na(73, "PRESET_BASH_MIRROR_LINE", PurgeLayer.PROMPT,
+                    "Operit 无 preset 体系", "配置层"),
+            na(75, "REWIND_RESET_TODOS", PurgeLayer.CODE,
+                    "Operit rewind 无 todos 子行为", "rewind"),
+            na(76, "PRESET_UNRESTRICTED_IDENTITY_STRIP", PurgeLayer.PROMPT,
+                    "Operit 无 preset 文件（由 207 注入层覆盖身份）", "preset yml"),
+            na(77, "REWIND_DROP_SENT_ON_APPEND", PurgeLayer.CODE,
+                    "Operit rewind 是整体回档", "rewind"),
+            na(78, "OVERLAY_RESTORE_FROM_BAK", PurgeLayer.CODE,
+                    "Operit 无 overlay 机制", "备份恢复"),
+            na(82, "DESKTOP_SHELL_PROFILE_FALLBACK", PurgeLayer.CODE,
+                    "dsh 桌面专有", "dsh desktop"),
+            na(83, "DESKTOP_HOST_CLOSE_NO_FATAL", PurgeLayer.CODE,
+                    "dsh 桌面专有", "dsh desktop"),
+            na(84, "DESKTOP_HOST_CLOSE_CODE0_NO_FAIL", PurgeLayer.CODE,
+                    "dsh 桌面专有", "dsh desktop")
     )
 
     val byId: Map<Int, PurgePatchDef> = ALL.associateBy { it.id }
