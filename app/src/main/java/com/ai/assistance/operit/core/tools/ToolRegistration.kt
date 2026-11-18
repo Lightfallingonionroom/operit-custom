@@ -528,6 +528,9 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                     val explicit = paramTool(tool, "agent_id")?.takeIf { it.isNotBlank() }
                     val agentId = explicit ?: PhoneSession.agentIdFor(chatId)
                     chatId?.takeIf { it.isNotBlank() }?.let { PhoneSession.bindAgent(it, agentId) }
+                    // 标记任务活跃：此后 grep_code 扫 XML、Automatic_ui_base 这些
+                    // 「自己摸索」的路径会被挡住，避免重演 84 次调用烧 553 万 token
+                    PhoneSession.markTaskActive(chatId)
 
                     val displayId = ShowerController.ensureBackgroundDisplay(agentId, context)
                     if (displayId == null) {
@@ -558,17 +561,27 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             descriptionGenerator = { _ -> s(R.string.toolreg_close_background_screen_desc) },
             executor = { tool ->
                 runBlocking(Dispatchers.IO) {
-                    val agentId = paramTool(tool, "agent_id")?.takeIf { it.isNotBlank() }
-                    if (agentId.isNullOrBlank()) {
-                        ToolResult(toolName = tool.name, success = false, result = StringResultData(""), error = "missing agent_id")
-                    } else {
-                        ShowerController.shutdown(agentId)
-                        ToolResult(
+                    val chatId = paramTool(tool, "chat_id")
+                            ?: paramTool(tool, "session_id")
+                    // 不传 agent_id 时关闭本会话绑定的那块屏（会话解绑 + 关屏）
+                    val explicit = paramTool(tool, "agent_id")?.takeIf { it.isNotBlank() }
+                    if (explicit == null && chatId.isNullOrBlank()) {
+                        return@runBlocking ToolResult(
                                 toolName = tool.name,
-                                success = true,
-                                result = StringResultData(s(R.string.toolreg_background_screen_closed, agentId))
+                                success = false,
+                                result = StringResultData(""),
+                                error = "missing agent_id or chat_id"
                         )
                     }
+                    val agentId = explicit ?: PhoneSession.agentIdFor(chatId)
+                    ShowerController.shutdown(agentId)
+                    // 任务结束：解除会话绑定、清掉摸索屏蔽
+                    PhoneSession.markTaskIdle(chatId)
+                    ToolResult(
+                            toolName = tool.name,
+                            success = true,
+                            result = StringResultData(s(R.string.toolreg_background_screen_closed, agentId))
+                    )
                 }
             }
     )
@@ -2440,7 +2453,19 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
                 }
             },
             executor = { tool ->
-                runBlocking(Dispatchers.IO) { fileSystemTools.grepCode(tool) }
+                // 后台屏任务期间屏蔽：实测那次 84 次调用里大半是拿 grep_code 扫
+                // uiautomator 导出的 XML，纯摸索，把上下文烧到 553 万 token。
+                val chatId = paramTool(tool, "chat_id")
+                if (PhoneSession.shouldBlockExploration(chatId, "grep_code")) {
+                    ToolResult(
+                            toolName = tool.name,
+                            success = false,
+                            result = StringResultData(""),
+                            error = PhoneSession.blockedMessage("grep_code")
+                    )
+                } else {
+                    runBlocking(Dispatchers.IO) { fileSystemTools.grepCode(tool) }
+                }
             }
     )
 

@@ -120,6 +120,61 @@ object PhoneSession {
     /** 固定默认 agentId，保证无 chatId 场景也不会每次新建屏。 */
     const val DEFAULT_AGENT = "phone-default"
 
+    // ---------- 后台屏任务进行中标记 ----------
+
+    /**
+     * 哪些会话正在跑后台屏任务。
+     *
+     * 用途：后台屏任务期间要挡住「自己摸索」的路径——实测那次 84 次调用里，
+     * 大量是 shell / uiautomator / grep_code 扫 XML，把 553 万 token 全烧了。
+     * 手机操作有自己的工具，不需要模型自己去挖界面结构。
+     */
+    private val activeTasks = ConcurrentHashMap.newKeySet<String>()
+
+    fun markTaskActive(chatId: String?) {
+        chatId?.takeIf { it.isNotBlank() }?.let { activeTasks.add(it) }
+    }
+
+    fun markTaskIdle(chatId: String?) {
+        chatId?.takeIf { it.isNotBlank() }?.let { activeTasks.remove(it) }
+    }
+
+    /** 该会话是否正在跑后台屏任务。 */
+    fun isTaskActive(chatId: String?): Boolean {
+        val key = chatId?.takeIf { it.isNotBlank() } ?: lastChatId ?: return false
+        return activeTasks.contains(key)
+    }
+
+    /**
+     * 该会话是否应该屏蔽某个摸索型工具。
+     *
+     * 只挡「为了摸界面而滥用」的工具，不挡真正需要执行的能力：
+     * shell / terminal 仍然可用（安装、启动、系统命令都靠它），
+     * 但 grep_code 扫 XML、uiautomator dump 这类纯摸索动作会被挡。
+     */
+    fun shouldBlockExploration(chatId: String?, toolName: String): Boolean {
+        if (!isTaskActive(chatId)) return false
+        return when (toolName) {
+            "grep_code", "grep_context" -> true
+            "Automatic_ui_base:get_page_info",
+            "Automatic_ui_base:click_element",
+            "Automatic_ui_base:tap",
+            "Automatic_ui_base:swipe",
+            "Automatic_ui_base:set_input_text",
+            "Automatic_ui_base:long_press",
+            "Automatic_ui_base:double_tap",
+            "Automatic_ui_base:press_key" -> true
+            else -> false
+        }
+    }
+
+    /** 屏蔽时返回给模型的说明，让它知道该走哪条路。 */
+    fun blockedMessage(toolName: String): String =
+            "工具 $toolName 在后台屏任务期间不可用。手机操作请直接用 " +
+                    "tap / swipe / set_input_text / capture_screenshot / start_app，" +
+                    "它们已经绑定到本会话的虚拟屏，不需要 agent_id。"
+
+
     /** 清空全部（进程退出/测试用）。 */
     fun clearAll() {
         chatBindings.keys.toList().forEach { release(it) }
