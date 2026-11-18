@@ -1,0 +1,79 @@
+name: Build Surge Downloader
+
+# 目的：在 CI（原生 x86_64 runner）编译 Surge 下载器为 arm64 静态二进制。
+#
+# 为什么不在本地编：本机是 proot(arm64) 环境，Go 工具链连 `go version` 都
+# 段错误（exit 139），无法编译任何 Go 程序。CI runner 是原生 x86_64，
+# 交叉编译到 android/arm64 完全可行。
+#
+# 产出：surge-android-arm64 二进制，下载到设备后可直接跑命令行下载，
+# 用于替代当前 curl 断点续传（GitHub artifact 反复断流）。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/surge-binary.yml'
+
+jobs:
+  build-surge:
+    name: Build Surge (android/arm64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Clone Surge
+        run: |
+          git clone --depth 1 https://github.com/SurgeDM/Surge.git /tmp/surge
+          cd /tmp/surge
+          head -3 go.mod
+
+      - name: Build for android/arm64
+        env:
+          CGO_ENABLED: '0'
+          GOOS: android
+          GOARCH: arm64
+        run: |
+          cd /tmp/surge
+          go mod download
+          go build -trimpath -ldflags "-s -w" -o /tmp/surge-android-arm64 .
+          ls -lh /tmp/surge-android-arm64
+          file /tmp/surge-android-arm64 || true
+
+      - name: Build for linux/arm64 (fallback)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          cd /tmp/surge
+          go build -trimpath -ldflags "-s -w" -o /tmp/surge-linux-arm64 .
+          ls -lh /tmp/surge-linux-arm64
+
+      - name: Smoke test (linux/arm64 via qemu)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static || true
+          /tmp/surge-linux-arm64 --version 2>&1 | head -5 || echo "version flag unsupported"
+          /tmp/surge-linux-arm64 --help 2>&1 | head -20 || true
+
+      - name: Package artifacts
+        run: |
+          mkdir -p out
+          cp /tmp/surge-android-arm64 out/ 2>/dev/null || true
+          cp /tmp/surge-linux-arm64 out/ 2>/dev/null || true
+          cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Upload Surge binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: surge-arm64
+          path: out/
+          retention-days: 14

@@ -174,6 +174,36 @@ object PhoneSession {
                     "tap / swipe / set_input_text / capture_screenshot / start_app，" +
                     "它们已经绑定到本会话的虚拟屏，不需要 agent_id。"
 
+    /**
+     * 后台屏任务期间要从 AI 可见清单里剔除的包。
+     *
+     * 为什么必须剔除，而不是只写提示词：
+     *
+     * `Automatic_ui_base` 是 JS 包，它的 tap/swipe/app_launch 全部走 `Tools.UI.*`
+     * 和 `Tools.System.startApp`，也就是**无障碍/前台路径**，根本不认识虚拟屏，
+     * 也不接受 agent_id。而我们在 Kotlin 层注册的 tap/swipe/start_app 才是走
+     * ShowerController 的虚拟屏版本。
+     *
+     * 两套工具同名，模型看到的是 JS 包那套（名字更直白、还有 usage_advice 推荐
+     * 「组合调用」），于是全程在前台摸索：实测 241 次调用里 tap/swipe/start_app
+     * 为 0，全是 shell + 截图 + 写 Python 解析 PNG，烧掉 1021 万 token、1230 秒。
+     *
+     * 所以这里从源头剔除，让模型只剩一套手机工具。
+     */
+    private val EXCLUDED_PACKAGES = setOf(
+            "Automatic_ui_base"
+    )
+
+    /** 该会话此刻是否应该隐藏某个包。 */
+    fun shouldHidePackage(chatId: String?, packageName: String): Boolean {
+        if (packageName !in EXCLUDED_PACKAGES) return false
+        return isTaskActive(chatId)
+    }
+
+    /** 过滤包清单，供系统提示词生成时调用。 */
+    fun filterPackages(chatId: String?, packages: Collection<String>): List<String> =
+            packages.filterNot { shouldHidePackage(chatId, it) }
+
 
     /** 清空全部（进程退出/测试用）。 */
     fun clearAll() {

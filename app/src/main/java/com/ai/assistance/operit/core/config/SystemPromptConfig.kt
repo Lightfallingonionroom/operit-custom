@@ -313,6 +313,14 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
             !packageManager.isToolPkgContainer(packageName) &&
             (allowedPackageNames?.contains(packageName) ?: true)
     }
+        // 后台屏任务期间剔除走前台路径的 UI 包。
+        // Automatic_ui_base 的 tap/swipe/app_launch 只走 Tools.UI.* 和
+        // Tools.System.startApp，不认识虚拟屏，与 Kotlin 层注册的虚拟屏版本同名，
+        // 模型会选错那一套，导致全程在前台摸索。
+        .filterNot { packageName ->
+            com.ai.assistance.operit.core.tools.agent.PhoneSession
+                .shouldHidePackage(chatId, packageName)
+        }
 
     // Check if any packages (JS, MCP, or Skills) are available
     val hasPackages = packageSystemVisible &&
